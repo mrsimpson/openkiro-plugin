@@ -1,9 +1,45 @@
-/**
- * Create CodeWhisperer SDK client
- */
+import { CodeWhispererStreamingClient } from '@aws/codewhisperer-streaming-client'
+import { KIRO_CONSTANTS } from './constants.js'
+import type { KiroAuthDetails } from './types.js'
+
+const clientCache = new Map<string, { client: CodeWhispererStreamingClient; token: string }>()
+
 export function createSdkClient(
-  region: string,
-  accessToken: string
-): unknown {
-  throw new Error('not implemented');
+  auth: KiroAuthDetails,
+  region: string
+): CodeWhispererStreamingClient {
+  const cacheKey = `${region}:${auth.refreshToken}`
+  const cached = clientCache.get(cacheKey)
+
+  if (cached && cached.token === auth.refreshToken) {
+    return cached.client
+  }
+
+  const token = auth.refreshToken
+  const client = new CodeWhispererStreamingClient({
+    region,
+    endpoint: `https://q.${region}.amazonaws.com`,
+    token: () => Promise.resolve({ token }),
+    maxAttempts: 1,
+    customUserAgent: [[KIRO_CONSTANTS.USER_AGENT]]
+  })
+
+  client.middlewareStack.add(
+    (next: any) => async (args: any) => {
+      args.request.headers['x-amzn-kiro-agent-mode'] = 'vibe'
+      return next(args)
+    },
+    { step: 'build', name: 'addKiroHeaders' }
+  )
+
+  clientCache.set(cacheKey, { client, token })
+  return client
 }
+
+export function clearSdkClientCache(): void {
+  for (const entry of clientCache.values()) {
+    entry.client.destroy()
+  }
+  clientCache.clear()
+}
+

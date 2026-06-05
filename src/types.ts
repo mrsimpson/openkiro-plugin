@@ -13,6 +13,11 @@ export const KiroConfigSchema = z.object({
 export type KiroConfig = z.infer<typeof KiroConfigSchema>;
 
 /**
+ * Supported AWS regions
+ */
+export type KiroRegion = 'us-east-1' | 'us-west-2' | 'eu-central-1' | 'eu-west-1' | 'ap-southeast-1';
+
+/**
  * IDC auth details stored in opencode's auth.json
  */
 export interface KiroAuthDetails {
@@ -24,16 +29,57 @@ export interface KiroAuthDetails {
 }
 
 /**
- * CodeWhisperer types
+ * Tool call structure
+ */
+export interface ToolCall {
+  toolUseId: string;
+  name: string;
+  input: any;
+}
+
+/**
+ * CodeWhisperer message structure (supports both user and assistant messages)
  */
 export interface CodeWhispererMessage {
-  role: 'user' | 'assistant';
-  content: string;
+  userInputMessage?: {
+    content: string;
+    modelId: string;
+    origin: string;
+    images?: any[];
+    userInputMessageContext?: {
+      toolResults?: any[];
+      tools?: any[];
+    };
+  };
+  assistantResponseMessage?: {
+    content: string;
+    toolUses?: Array<{
+      toolUseId: string;
+      name: string;
+      input: any;
+    }>;
+  };
 }
 
 export interface CodeWhispererRequest {
-  messages: CodeWhispererMessage[];
-  maxTokens?: number;
+  conversationState: {
+    chatTriggerType: string;
+    conversationId: string;
+    currentMessage: {
+      userInputMessage: {
+        content: string;
+        modelId: string;
+        origin: string;
+        images?: any[];
+        userInputMessageContext?: {
+          toolResults?: any[];
+          tools?: any[];
+        };
+      };
+    };
+    history?: CodeWhispererMessage[];
+  };
+  idcRegion?: string;
 }
 
 export interface CodeWhispererResponse {
