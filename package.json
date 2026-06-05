@@ -1,0 +1,29 @@
+{
+  "name": "openkiro-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "opencode": {
+    "hooks": {
+      "auth": "./dist/index.js",
+      "provider": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@aws/codewhisperer-streaming-client": "^1.0.0",
+    "@opencode-ai/plugin": "^1.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  },
+  "scripts": {
+    "test": "vitest",
+    "build": "tsc -p tsconfig.build.json"
+  }
+}

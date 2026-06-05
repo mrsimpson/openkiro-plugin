@@ -1,0 +1,29 @@
+{
+  "conversationId": "openkiro-plugin-feat-minimal-kiro-plugin-kqm57h",
+  "projectPath": "/Users/oliverjaegle/projects/privat/openkiro-plugin",
+  "epicId": "openkiro-plugin-1",
+  "phaseTasks": [
+    {
+      "phaseId": "explore",
+      "phaseName": "Explore",
+      "taskId": "openkiro-plugin-1.1"
+    },
+    {
+      "phaseId": "plan",
+      "phaseName": "Plan",
+      "taskId": "openkiro-plugin-1.2"
+    },
+    {
+      "phaseId": "code",
+      "phaseName": "Code",
+      "taskId": "openkiro-plugin-1.3"
+    },
+    {
+      "phaseId": "commit",
+      "phaseName": "Commit",
+      "taskId": "openkiro-plugin-1.4"
+    }
+  ],
+  "createdAt": "2026-06-05T15:53:19.502Z",
+  "updatedAt": "2026-06-05T15:53:19.502Z"
+}
