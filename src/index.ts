@@ -1,7 +1,8 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { decodeRefreshToken, accessTokenExpired } from './auth.js'
+import { decodeRefreshToken, accessTokenExpired, encodeRefreshToken } from './auth.js'
 import { refreshAccessToken, KiroTokenRefreshError } from './token.js'
+import { authorizeKiroIDC, pollKiroIDCToken } from './oauth-idc.js'
 import { transformToSdkRequest } from './request.js'
 import { createSdkClient } from './sdk-client.js'
 import { transformSdkStream } from './streaming/sdk-stream-transformer.js'
@@ -9,6 +10,45 @@ import type { KiroConfig, KiroAuthDetails } from './types.js'
 import { KiroConfigSchema } from './types.js'
 
 let cachedConfig: KiroConfig | null = null
+
+function getOpenCodeAuthPath(): string {
+  const dataRoot = process.platform === 'win32'
+    ? (process.env.APPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Roaming'))
+    : (process.env.XDG_DATA_HOME || path.join(process.env.HOME || '', '.local', 'share'))
+  return path.join(dataRoot, 'opencode', 'auth.json')
+}
+
+function readAuthFile(): Record<string, any> {
+  const authPath = getOpenCodeAuthPath()
+  try {
+    if (fs.existsSync(authPath)) {
+      const content = fs.readFileSync(authPath, 'utf-8')
+      return JSON.parse(content)
+    }
+  } catch (e) {
+    // Ignore errors
+  }
+  return {}
+}
+
+function writeAuthFile(auth: Record<string, any>): void {
+  const authPath = getOpenCodeAuthPath()
+  try {
+    const dir = path.dirname(authPath)
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
+    // Preserve file permissions if it exists
+    const mode = fs.existsSync(authPath) ? fs.statSync(authPath).mode & 0o777 : 0o600
+    const tempPath = `${authPath}.${process.pid}.${Date.now()}.tmp`
+    fs.writeFileSync(tempPath, JSON.stringify(auth, null, 2), { encoding: 'utf-8', mode })
+    fs.chmodSync(tempPath, mode)
+    fs.renameSync(tempPath, authPath)
+  } catch (e) {
+    // Log but don't throw — auth may be read-only
+    console.error(`Failed to write auth.json: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
 
 function loadConfig(): KiroConfig {
   if (cachedConfig) return cachedConfig
@@ -60,6 +100,44 @@ const plugin = {
         id: 'idc',
         name: 'AWS IAM Identity Center (IDC)',
         description: 'Authenticate via IDC device code flow',
+        handler: async (): Promise<{ refreshToken: string; clientId: string; clientSecret: string; idcRegion: string }> => {
+          const config = loadConfig()
+          
+          // Step 1: Start device code flow
+          const authResp = await authorizeKiroIDC(config.idc_region as any, config.idc_start_url)
+          
+          // Step 2: Poll for tokens
+          const tokens = await pollKiroIDCToken(
+            authResp.clientId,
+            authResp.clientSecret,
+            authResp.deviceCode,
+            authResp.interval,
+            authResp.expiresIn,
+            authResp.region
+          )
+          
+          // Step 3: Store in auth.json
+          const auth = readAuthFile()
+          auth.kiro = {
+            refreshToken: encodeRefreshToken(
+              tokens.refreshToken,
+              tokens.clientId,
+              tokens.clientSecret,
+              tokens.region
+            ),
+            clientId: tokens.clientId,
+            clientSecret: tokens.clientSecret,
+            idcRegion: tokens.region,
+          }
+          writeAuthFile(auth)
+          
+          return {
+            refreshToken: tokens.refreshToken,
+            clientId: tokens.clientId,
+            clientSecret: tokens.clientSecret,
+            idcRegion: tokens.region,
+          }
+        },
       },
     ],
 
@@ -81,6 +159,8 @@ const plugin = {
 
       // Check if access token is expired
       const expiresAt = authData.auth.clientSecret ? parseInt(authData.auth.clientSecret) : Date.now() + 3600000
+      let accessToken = ''
+      
       if (accessTokenExpired(expiresAt)) {
         // Refresh the token
         try {
@@ -90,8 +170,26 @@ const plugin = {
             decoded.clientSecret,
             decoded.idcRegion || config.idc_region
           )
-          // Update auth data with new token (in real usage, opencode would persist this)
+          accessToken = refreshed.accessToken
+          
+          // Update stored token in auth.json with new tokens
+          const auth = readAuthFile()
+          if (auth.kiro) {
+            auth.kiro.refreshToken = encodeRefreshToken(
+              decoded.refreshToken,
+              decoded.clientId,
+              decoded.clientSecret,
+              decoded.idcRegion || config.idc_region
+            )
+            auth.kiro.clientSecret = String(refreshed.expiresAt)
+            writeAuthFile(auth)
+          }
         } catch (e) {
+          // On refresh failure, clear the auth entry so user must re-authenticate
+          const auth = readAuthFile()
+          delete auth.kiro
+          writeAuthFile(auth)
+          
           throw new KiroTokenRefreshError(
             `Token refresh failed: ${e instanceof Error ? e.message : 'Unknown error'}`,
             'REFRESH_FAILED'
