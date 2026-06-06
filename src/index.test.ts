@@ -2,18 +2,29 @@ import { describe, it, expect, beforeEach } from 'vitest'
 
 describe('plugin entry (index.ts)', () => {
   let plugin: any
+  let pluginModule: any
 
   beforeEach(async () => {
     const mod = await import('./index.js')
-    plugin = mod.default
+    pluginModule = mod.default
+    plugin = await pluginModule.server({})
   })
 
-  describe('plugin interface (OpenCode contract)', () => {
-    it('config should be a hook function', () => {
+  describe('plugin module shape', () => {
+    it('should export { id, server } as PluginModule', () => {
+      expect(pluginModule).toHaveProperty('id')
+      expect(pluginModule).toHaveProperty('server')
+      expect(typeof pluginModule.server).toBe('function')
+      expect(pluginModule.id).toBe('kiro')
+    })
+  })
+
+  describe('config hook', () => {
+    it('should be a function', () => {
       expect(typeof plugin.config).toBe('function')
     })
 
-    it('config hook should mutate input.provider with npm, api, and models', async () => {
+    it('should register provider with npm and models', async () => {
       const input = { provider: {} }
       await plugin.config(input)
 
@@ -23,84 +34,67 @@ describe('plugin entry (index.ts)', () => {
       expect((input.provider as any).kiro.models).toBeDefined()
     })
 
-    it('auth.loader should accept a getAuth callback and call it', () => {
-      const fs = require('fs')
-      const source = fs.readFileSync(
-        require('path').resolve(__dirname, './index.ts'),
-        'utf-8'
-      )
+    it('should not overwrite user-defined models', async () => {
+      const input = { provider: { kiro: { models: { custom: { name: 'Custom' } } } } }
+      await plugin.config(input)
 
-      const loaderDef = source.match(/loader:\s*async\s*\(([^)]+)\)/)
-      expect(loaderDef).not.toBeNull()
+      expect((input.provider as any).kiro.models.custom).toEqual({ name: 'Custom' })
+      expect((input.provider as any).kiro.models['claude-sonnet-4-6']).toBeUndefined()
+    })
+  })
 
-      const paramName = loaderDef![1].trim().split(/[:{]/)[0].trim()
-      expect(paramName).not.toMatch(/authData|auth/)
-      expect(source).toMatch(/await\s+getAuth\s*\(\s*\)/)
+  describe('auth hook', () => {
+    it('should have provider set to kiro', () => {
+      expect(plugin.auth.provider).toBe('kiro')
     })
 
-    it('auth.methods should have correct shape: { label, type, prompts, authorize }', () => {
-      const methods = plugin.auth.methods
-
-      expect(Array.isArray(methods)).toBe(true)
-      expect(methods.length).toBeGreaterThan(0)
-
-      const method = methods[0]
-      expect(method).toHaveProperty('label')
-      expect(method).toHaveProperty('type')
-      expect(method.type).toBe('oauth')
-      expect(method).toHaveProperty('prompts')
-      expect(Array.isArray(method.prompts)).toBe(true)
-      expect(method).toHaveProperty('authorize')
-      expect(typeof method.authorize).toBe('function')
-      expect(method).not.toHaveProperty('handler')
-      expect(method).not.toHaveProperty('id')
+    it('should have a loader function', () => {
+      expect(typeof plugin.auth.loader).toBe('function')
     })
 
-    it('auth.methods prompts should include start_url and idc_region', () => {
-      const prompts = plugin.auth.methods[0].prompts
-      const keys = prompts.map((p: any) => p.key)
-
-      expect(keys).toContain('start_url')
-      expect(keys).toContain('idc_region')
-
-      for (const prompt of prompts) {
-        expect(prompt).toHaveProperty('type')
-        expect(prompt.type).toBe('text')
-        expect(prompt).toHaveProperty('key')
-        expect(prompt).toHaveProperty('message')
-      }
-    })
-
-    it('auth.methods authorize should be a callable function', () => {
+    it('should have a methods array with oauth type (Kiro CLI based)', () => {
+      expect(Array.isArray(plugin.auth.methods)).toBe(true)
+      expect(plugin.auth.methods[0].type).toBe('oauth')
+      expect(plugin.auth.methods[0].label).toContain('Kiro CLI')
       expect(typeof plugin.auth.methods[0].authorize).toBe('function')
     })
+  })
 
-    it('provider should be an object with a models function', () => {
-      const provider = plugin.provider
+  describe('provider hook', () => {
+    it('should have id and models function', () => {
+      expect(plugin.provider.id).toBe('kiro')
+      expect(typeof plugin.provider.models).toBe('function')
+    })
 
-      if (typeof provider === 'function') {
-        expect.fail('provider should be an object with a models function, not an async function')
+    it('should normalize model entries with npm and url', async () => {
+      const provider = {
+        models: {
+          'claude-sonnet-4-6': { name: 'Claude Sonnet 4.6', limit: { context: 1000000 } }
+        }
       }
+      const result = await plugin.provider.models(provider)
 
-      expect(provider).toHaveProperty('models')
-      expect(typeof provider.models).toBe('function')
+      expect(result['claude-sonnet-4-6'].api.npm).toBe('@ai-sdk/openai-compatible')
+      expect(result['claude-sonnet-4-6'].api.url).toMatch(/q\..*\.amazonaws\.com/)
     })
   })
 
-  describe('token refresh in customFetch', () => {
-    it('customFetch should pass access token to createSdkClient', () => {
+  describe('auth.loader behavior', () => {
+    it('should read from Kiro CLI DB (source code check)', () => {
       const fs = require('fs')
       const source = fs.readFileSync(
         require('path').resolve(__dirname, './index.ts'),
         'utf-8'
       )
 
-      const customFetchSection = source.slice(source.indexOf('customFetch'))
-      expect(customFetchSection).toMatch(/createSdkClient\s*\([^)]*access/)
-      expect(customFetchSection).not.toMatch(/createSdkClient\s*\(\s*\{[^}]*refreshToken:\s*decoded\.refreshToken/)
+      expect(source).toContain('readKiroCliAuth')
+      expect(source).not.toContain('decodeRefreshToken')
+      expect(source).not.toContain('encodeRefreshToken')
     })
+  })
 
-    it('customFetch should refresh token before each request if expired', () => {
+  describe('customFetch in loader', () => {
+    it('should contain retry logic', () => {
       const fs = require('fs')
       const source = fs.readFileSync(
         require('path').resolve(__dirname, './index.ts'),
@@ -112,47 +106,11 @@ describe('plugin entry (index.ts)', () => {
         source.indexOf('return { apiKey')
       )
 
-      expect(customFetchBody).toMatch(/accessTokenExpired|expiresAt.*Date\.now|refreshAccessToken/)
+      expect(customFetchBody).toMatch(/maxAttempts/)
+      expect(customFetchBody).toMatch(/429/)
     })
 
-    it('refreshed accessToken should be used in SDK client creation', () => {
-      const fs = require('fs')
-      const source = fs.readFileSync(
-        require('path').resolve(__dirname, './index.ts'),
-        'utf-8'
-      )
-
-      const customFetchSection = source.slice(source.indexOf('const customFetch'))
-      expect(customFetchSection).toContain('accessToken')
-      expect(customFetchSection).toMatch(/createSdkClient\s*\([^)]*access:\s*accessToken/)
-    })
-  })
-
-  describe('clientSecret field integrity', () => {
-    it('should NOT parse clientSecret as a number for expiresAt', () => {
-      const fs = require('fs')
-      const source = fs.readFileSync(
-        require('path').resolve(__dirname, './index.ts'),
-        'utf-8'
-      )
-
-      expect(source).not.toMatch(/parseInt\(authData\.auth\.clientSecret\)/)
-      expect(source).not.toMatch(/clientSecret.*expiresAt|expiresAt.*clientSecret.*parseInt/)
-    })
-
-    it('should NOT write expiresAt into clientSecret', () => {
-      const fs = require('fs')
-      const source = fs.readFileSync(
-        require('path').resolve(__dirname, './index.ts'),
-        'utf-8'
-      )
-
-      expect(source).not.toMatch(/clientSecret\s*=\s*String\(.*expiresAt/)
-    })
-  })
-
-  describe('retry logic', () => {
-    it('customFetch should contain retry logic for transient errors', () => {
+    it('should re-read auth from DB on each request', () => {
       const fs = require('fs')
       const source = fs.readFileSync(
         require('path').resolve(__dirname, './index.ts'),
@@ -164,52 +122,10 @@ describe('plugin entry (index.ts)', () => {
         source.indexOf('return { apiKey')
       )
 
-      expect(customFetchBody).toMatch(/retry|maxAttempts|while\s*\(|for\s*\(/)
+      expect(customFetchBody).toContain('readKiroCliAuth')
     })
 
-    it('should handle 429 rate limit responses', () => {
-      const fs = require('fs')
-      const source = fs.readFileSync(
-        require('path').resolve(__dirname, './index.ts'),
-        'utf-8'
-      )
-
-      expect(source).toMatch(/429|rate.?limit|throttl/i)
-    })
-  })
-
-  describe('auth bootstrap', () => {
-    it('config hook should bootstrap auth entry for seamless startup', () => {
-      const fs = require('fs')
-      const source = fs.readFileSync(
-        require('path').resolve(__dirname, './index.ts'),
-        'utf-8'
-      )
-
-      expect(source).toMatch(/bootstrap|writeAuthFile.*placeholder|ensureAuth/)
-    })
-  })
-
-  describe('thinking mode detection in customFetch', () => {
-    it('should detect thinking mode from model name and providerOptions', () => {
-      const fs = require('fs')
-      const source = fs.readFileSync(
-        require('path').resolve(__dirname, './index.ts'),
-        'utf-8'
-      )
-
-      const customFetchBody = source.slice(
-        source.indexOf('const customFetch'),
-        source.indexOf('return { apiKey')
-      )
-
-      expect(customFetchBody).toContain('providerOptions')
-      expect(customFetchBody).toMatch(/endsWith.*thinking|thinking.*model/)
-    })
-  })
-
-  describe('SDK command pattern', () => {
-    it('should use GenerateAssistantResponseCommand via client.send()', () => {
+    it('should use GenerateAssistantResponseCommand', () => {
       const fs = require('fs')
       const source = fs.readFileSync(
         require('path').resolve(__dirname, './index.ts'),
@@ -218,7 +134,22 @@ describe('plugin entry (index.ts)', () => {
 
       expect(source).toContain('GenerateAssistantResponseCommand')
       expect(source).toMatch(/\.send\s*\(/)
-      expect(source).not.toMatch(/as any\)\.generateAssistantResponse/)
+    })
+
+    it('should detect thinking mode from model name', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      const customFetchBody = source.slice(
+        source.indexOf('const customFetch'),
+        source.indexOf('return { apiKey')
+      )
+
+      expect(customFetchBody).toMatch(/endsWith.*thinking/)
+      expect(customFetchBody).toContain('providerOptions')
     })
   })
 })

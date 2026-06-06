@@ -15,7 +15,7 @@ export function createSdkClient(
     return cached.client
   }
 
-  const token = auth.access
+  const token = auth.access!
   const client = new CodeWhispererStreamingClient({
     region,
     endpoint: `https://q.${region}.amazonaws.com`,

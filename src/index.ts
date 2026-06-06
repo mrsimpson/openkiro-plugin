@@ -1,263 +1,178 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { decodeRefreshToken, accessTokenExpired, encodeRefreshToken } from './auth.js'
+import * as os from 'os'
 import { refreshAccessToken, KiroTokenRefreshError } from './token.js'
-import { authorizeKiroIDC, pollKiroIDCToken } from './oauth-idc.js'
 import { transformToSdkRequest } from './request.js'
 import { createSdkClient } from './sdk-client.js'
 import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
 import { transformSdkStream } from './streaming/sdk-stream-transformer.js'
-import type { KiroConfig, KiroAuthDetails } from './types.js'
-import { KiroConfigSchema } from './types.js'
+import { extractRegionFromArn } from './constants.js'
+import type { KiroAuthDetails } from './types.js'
+import { readKiroCliAuth, type KiroCliAuth } from './kiro-cli-db.js'
 
-let cachedConfig: KiroConfig | null = null
+const PLUGIN_ID = 'kiro'
 
-function getOpenCodeAuthPath(): string {
-  const dataRoot = process.platform === 'win32'
-    ? (process.env.APPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Roaming'))
-    : (process.env.XDG_DATA_HOME || path.join(process.env.HOME || '', '.local', 'share'))
-  return path.join(dataRoot, 'opencode', 'auth.json')
-}
-
-function readAuthFile(): Record<string, any> {
-  const authPath = getOpenCodeAuthPath()
+function bootstrapAuthIfNeeded(): void {
   try {
+    const dataRoot = process.platform === 'win32'
+      ? (process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'))
+      : (process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'))
+    const authPath = path.join(dataRoot, 'opencode', 'auth.json')
+
+    let auth: Record<string, any> = {}
     if (fs.existsSync(authPath)) {
-      const content = fs.readFileSync(authPath, 'utf-8')
-      return JSON.parse(content)
+      const parsed = JSON.parse(fs.readFileSync(authPath, 'utf-8'))
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return
+      auth = parsed
     }
-  } catch (e) {
-    // Ignore errors
-  }
-  return {}
-}
+    if (auth[PLUGIN_ID]) return
 
-function writeAuthFile(auth: Record<string, any>): void {
-  const authPath = getOpenCodeAuthPath()
-  try {
+    auth[PLUGIN_ID] = { type: 'api', key: 'kiro-cli-bootstrap' }
     const dir = path.dirname(authPath)
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true })
-    }
-    // Preserve file permissions if it exists
-    const mode = fs.existsSync(authPath) ? fs.statSync(authPath).mode & 0o777 : 0o600
-    const tempPath = `${authPath}.${process.pid}.${Date.now()}.tmp`
-    fs.writeFileSync(tempPath, JSON.stringify(auth, null, 2), { encoding: 'utf-8', mode })
-    fs.chmodSync(tempPath, mode)
-    fs.renameSync(tempPath, authPath)
-  } catch (e) {
-    // Log but don't throw — auth may be read-only
-    console.error(`Failed to write auth.json: ${e instanceof Error ? e.message : String(e)}`)
-  }
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(authPath, JSON.stringify(auth, null, 2), { mode: 0o600 })
+  } catch {}
 }
 
-function bootstrapAuthIfNeeded(id: string): void {
-  const auth = readAuthFile()
-  if (!auth[id]) {
-    // Write a placeholder entry so OpenCode knows to call the auth loader on startup
-    auth[id] = { placeholder: true }
-    writeAuthFile(auth)
-  }
-}
-
-function loadConfig(): KiroConfig {
-  if (cachedConfig) return cachedConfig
-
-  // Load user-global config
-  const userConfigPath = path.join(process.env.HOME || process.env.USERPROFILE || '', '.config', 'opencode', 'kiro.json')
-  let userConfig: Partial<KiroConfig> = {}
+function getApiRegionOverride(): string | undefined {
   try {
-    if (fs.existsSync(userConfigPath)) {
-      const content = fs.readFileSync(userConfigPath, 'utf-8')
-      userConfig = JSON.parse(content)
+    const fs = require('fs')
+    const path = require('path')
+    const configPath = path.join(
+      process.env.HOME || process.env.USERPROFILE || '',
+      '.config', 'opencode', 'kiro.json'
+    )
+    if (fs.existsSync(configPath)) {
+      const content = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+      return content.default_region || undefined
     }
-  } catch (e) {
-    // Ignore errors reading user config
-  }
-
-  // Load project config (overrides user config)
-  let projectConfig: Partial<KiroConfig> = {}
-  const projectConfigPath = path.join(process.cwd(), '.opencode', 'kiro.json')
-  try {
-    if (fs.existsSync(projectConfigPath)) {
-      const content = fs.readFileSync(projectConfigPath, 'utf-8')
-      projectConfig = JSON.parse(content)
-    }
-  } catch (e) {
-    // Ignore errors reading project config
-  }
-
-  // Merge: defaults < user < project
-  const merged = {
-    default_region: 'us-east-1',
-    idc_start_url: 'https://view.awsapps.com/start',
-    idc_region: 'us-east-1',
-    ...userConfig,
-    ...projectConfig,
-  }
-
-  // Validate
-  const validated = KiroConfigSchema.parse(merged)
-  cachedConfig = validated
-  return validated
+  } catch {}
+  return undefined
 }
 
-function createPlugin(id: string) {
-  const config = loadConfig()
-  const baseURL = `https://q.${config.default_region}.amazonaws.com`
+const KiroPlugin = async (_input: any) => {
+  const regionOverride = getApiRegionOverride()
+
+  function resolveApiRegion(cliAuth: KiroCliAuth): string {
+    if (regionOverride) return regionOverride
+    return extractRegionFromArn(cliAuth.profileArn) || cliAuth.region || 'us-east-1'
+  }
 
   return {
     config: async (input: any) => {
-      // Bootstrap auth entry for seamless startup
-      bootstrapAuthIfNeeded(id)
+      bootstrapAuthIfNeeded()
+
+      const cliAuth = readKiroCliAuth()
+      const apiRegion = cliAuth ? resolveApiRegion(cliAuth) : 'us-east-1'
+      const baseURL = `https://q.${apiRegion}.amazonaws.com`
 
       if (!input.provider) input.provider = {}
-      if (!input.provider[id]) input.provider[id] = {}
-      input.provider[id].npm = '@ai-sdk/openai-compatible'
-      input.provider[id].api = baseURL
-      input.provider[id].models = {
-        'auto': { name: 'Auto', limit: { context: 200000, output: 64000 }, modalities: { input: ['text', 'image'], output: ['text'] } },
-        'claude-sonnet-4-5': { name: 'Claude Sonnet 4.5', limit: { context: 200000, output: 64000 }, modalities: { input: ['text', 'image'], output: ['text'] } },
-        'claude-sonnet-4-6': { name: 'Claude Sonnet 4.6', limit: { context: 1000000, output: 64000 }, modalities: { input: ['text', 'image'], output: ['text'] } },
-        'claude-opus-4-7': { name: 'Claude Opus 4.7', limit: { context: 1000000, output: 64000 }, modalities: { input: ['text', 'image'], output: ['text'] } },
+      if (!input.provider[PLUGIN_ID]) input.provider[PLUGIN_ID] = {}
+      input.provider[PLUGIN_ID].npm = '@ai-sdk/openai-compatible'
+      input.provider[PLUGIN_ID].api = baseURL
+      if (!input.provider[PLUGIN_ID].models) {
+        input.provider[PLUGIN_ID].models = {
+          'auto': { name: 'Auto (1.0x)', limit: { context: 200000, output: 64000 }, modalities: { input: ['text', 'image', 'pdf'], output: ['text'] } },
+          'claude-sonnet-4-5': { name: 'Claude Sonnet 4.5', limit: { context: 200000, output: 64000 }, modalities: { input: ['text', 'image', 'pdf'], output: ['text'] } },
+          'claude-sonnet-4-6': { name: 'Claude Sonnet 4.6', limit: { context: 1000000, output: 64000 }, modalities: { input: ['text', 'image', 'pdf'], output: ['text'] } },
+          'claude-opus-4-7': { name: 'Claude Opus 4.7', limit: { context: 1000000, output: 64000 }, modalities: { input: ['text', 'image', 'pdf'], output: ['text'] } },
+        }
       }
     },
 
     auth: {
-      provider: id,
-      loader: async (getAuth: any) => {
-        await getAuth()
+      provider: PLUGIN_ID,
+      loader: async (_getAuth: any) => {
+        const cliAuth = readKiroCliAuth()
+        if (!cliAuth) return {}
 
-        const authFile = readAuthFile()
-        const storedData = authFile[id]
+        const apiRegion = resolveApiRegion(cliAuth)
+        const baseURL = `https://q.${apiRegion}.amazonaws.com`
 
-        if (!storedData || !storedData.refreshToken) {
-          throw new Error('No stored refresh token found')
-        }
+        let accessToken = cliAuth.accessToken
+        let expiresAt = cliAuth.expiresAt
 
-        // Decode the stored token
-        let decoded: any
-        try {
-          decoded = decodeRefreshToken(storedData.refreshToken)
-        } catch (e) {
-          throw new Error(`Failed to decode refresh token: ${e instanceof Error ? e.message : 'Unknown error'}`)
-        }
-
-        // Get initial access token
-        let accessToken = ''
-        let expiresAt = storedData.expiresAt || 0
-
-        if (accessTokenExpired(expiresAt)) {
+        if (Date.now() >= expiresAt - 120_000) {
           try {
             const refreshed = await refreshAccessToken(
-              decoded.refreshToken,
-              decoded.clientId,
-              decoded.clientSecret,
-              config.idc_region
+              cliAuth.refreshToken,
+              cliAuth.clientId,
+              cliAuth.clientSecret,
+              cliAuth.region
             )
             accessToken = refreshed.accessToken
             expiresAt = refreshed.expiresAt
-
-            // Update stored auth with new expiresAt
-            const auth = readAuthFile()
-            if (auth[id]) {
-              auth[id].expiresAt = refreshed.expiresAt
-              writeAuthFile(auth)
-            }
-          } catch (e) {
-            // On refresh failure, clear the auth entry so user must re-authenticate
-            const auth = readAuthFile()
-            delete auth[id]
-            writeAuthFile(auth)
-
-            throw new KiroTokenRefreshError(
-              `Token refresh failed: ${e instanceof Error ? e.message : 'Unknown error'}`,
-              'REFRESH_FAILED'
-            )
+          } catch {
+            return {}
           }
         }
 
-        // Create custom fetch that intercepts CodeWhisperer URLs
         const customFetch: typeof fetch = async (resource, init) => {
           const url = typeof resource === 'string' ? resource : (resource as any).url
-          const isCodeWhispererUrl = /q\..*\.amazonaws\.com/.test(url)
-
-          if (!isCodeWhispererUrl) {
-            // Pass through to native fetch
+          if (!/q\..*\.amazonaws\.com/.test(url)) {
             return globalThis.fetch(resource, init)
           }
 
-          // Check token expiry and refresh if needed before each request
-          if (accessTokenExpired(expiresAt)) {
+          // Re-read from DB on each request to pick up token rotations from Kiro CLI
+          const freshAuth = readKiroCliAuth()
+          if (freshAuth) {
+            accessToken = freshAuth.accessToken
+            expiresAt = freshAuth.expiresAt
+          }
+
+          if (Date.now() >= expiresAt - 120_000) {
+            const src = freshAuth || cliAuth
             try {
               const refreshed = await refreshAccessToken(
-                decoded.refreshToken,
-                decoded.clientId,
-                decoded.clientSecret,
-                config.idc_region
+                src.refreshToken,
+                src.clientId,
+                src.clientSecret,
+                src.region
               )
               accessToken = refreshed.accessToken
               expiresAt = refreshed.expiresAt
-
-              // Persist the new expiresAt
-              const auth = readAuthFile()
-              if (auth[id]) {
-                auth[id].expiresAt = refreshed.expiresAt
-                writeAuthFile(auth)
-              }
             } catch (e) {
               throw new KiroTokenRefreshError(
-                `Token refresh failed mid-session: ${e instanceof Error ? e.message : 'Unknown error'}`,
+                `Token refresh failed: ${e instanceof Error ? e.message : 'Unknown error'}`,
                 'REFRESH_FAILED'
               )
             }
           }
 
-          // Transform OpenAI request to CodeWhisperer format
           const body = init?.body ? (typeof init.body === 'string' ? JSON.parse(init.body) : init.body) : {}
-          const model = body.model || 'claude-sonnet-4-5'
+          const model = body.model || 'claude-sonnet-4-6'
 
-          // Detect thinking mode from model name or providerOptions
           const think = model.endsWith('-thinking') || !!body.providerOptions?.thinkingConfig
           const budget = body.providerOptions?.thinkingConfig?.thinkingBudget || 20000
 
           const sdkRequest = transformToSdkRequest(body, model, {
-            refreshToken: decoded.refreshToken,
-            clientId: decoded.clientId,
-            clientSecret: decoded.clientSecret,
-            idcRegion: config.idc_region,
-            expiresAt,
-          }, think, budget)
+            idcRegion: cliAuth.region,
+            profileArn: cliAuth.profileArn,
+          } as KiroAuthDetails, think, budget)
 
-          // Create SDK client using fresh accessToken
+          const effectiveRegion = sdkRequest.region || apiRegion
           const sdkClient = createSdkClient(
             { access: accessToken } as KiroAuthDetails,
-            config.default_region
+            effectiveRegion
           )
 
-          // Retry logic for transient errors (429, 5xx)
           const maxAttempts = 3
           let lastError: any = null
 
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-              // Use Command pattern via client.send()
               const command = new GenerateAssistantResponseCommand({
                 conversationState: sdkRequest.conversationState,
                 profileArn: sdkRequest.profileArn
               })
               const sdkResponse = await sdkClient.send(command)
-
-              // Stream response back as OpenAI SSE
               const stream = transformSdkStream(sdkResponse, model, sdkRequest.conversationId)
 
-              // Convert async generator to readable stream
               const readable = new ReadableStream({
                 async start(controller) {
                   try {
                     for await (const chunk of stream) {
-                      const line = `data: ${JSON.stringify(chunk)}\n\n`
-                      controller.enqueue(new TextEncoder().encode(line))
+                      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(chunk)}\n\n`))
                     }
                     controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
                     controller.close()
@@ -280,11 +195,8 @@ function createPlugin(id: string) {
               const status = e?.statusCode || e?.$metadata?.httpStatusCode || 0
               const isRetryable = status === 429 || (status >= 500 && status < 600)
 
-              if (!isRetryable || attempt >= maxAttempts) {
-                throw e
-              }
+              if (!isRetryable || attempt >= maxAttempts) throw e
 
-              // Exponential backoff for rate limit / throttling errors
               const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000)
               await new Promise(resolve => setTimeout(resolve, delay))
             }
@@ -298,74 +210,40 @@ function createPlugin(id: string) {
 
       methods: [
         {
-          label: 'AWS IAM Identity Center',
+          label: 'Kiro CLI (already authenticated)',
           type: 'oauth' as const,
-          prompts: [
-            {
-              type: 'text' as const,
-              key: 'start_url',
-              message: 'Enter your IAM Identity Center start URL',
-              placeholder: 'https://d-xxxxxxxxxx.awsapps.com/start',
-              validate: (value: string) => {
-                if (!value) return 'Start URL is required'
-                try { new URL(value) } catch { return 'Must be a valid URL' }
-                return undefined
-              }
-            },
-            {
-              type: 'text' as const,
-              key: 'idc_region',
-              message: 'Enter your IDC region',
-              placeholder: 'us-east-1',
-              validate: (value: string) => {
-                if (!value) return 'Region is required'
-                return undefined
-              }
-            },
-          ],
-          authorize: async (inputs: Record<string, string>) => {
-            const startUrl = inputs.start_url || config.idc_start_url
-            const idcRegion = inputs.idc_region || config.idc_region
-
-            // Start device code flow
-            const authResp = await authorizeKiroIDC(idcRegion as any, startUrl)
-
+          authorize: async () => {
+            const cliAuth = readKiroCliAuth()
+            if (!cliAuth) {
+              throw new Error(
+                'Kiro CLI is not authenticated. Run "kiro login" first.'
+              )
+            }
             return {
-              url: authResp.verificationUriComplete || authResp.verificationUrl,
-              instructions: `Enter code: ${authResp.userCode}`,
+              url: '',
+              instructions: 'Using existing Kiro CLI session',
               method: 'auto' as const,
               callback: async () => {
-                // Poll for tokens
-                const tokens = await pollKiroIDCToken(
-                  authResp.clientId,
-                  authResp.clientSecret,
-                  authResp.deviceCode,
-                  authResp.interval,
-                  authResp.expiresIn,
-                  authResp.region
-                )
-
-                // Store in auth.json
-                const auth = readAuthFile()
-                auth[id] = {
-                  refreshToken: encodeRefreshToken(
-                    tokens.refreshToken,
-                    tokens.clientId,
-                    tokens.clientSecret,
-                    tokens.region
-                  ),
-                  clientId: tokens.clientId,
-                  idcRegion: tokens.region,
-                  expiresAt: tokens.expiresAt,
+                // Verify credentials are still valid by refreshing
+                try {
+                  const refreshed = await refreshAccessToken(
+                    cliAuth.refreshToken,
+                    cliAuth.clientId,
+                    cliAuth.clientSecret,
+                    cliAuth.region
+                  )
+                  return {
+                    type: 'success' as const,
+                    refresh: 'kiro-cli',
+                    access: refreshed.accessToken,
+                    expires: refreshed.expiresAt,
+                  }
+                } catch {
+                  throw new Error(
+                    'Kiro CLI session is expired or revoked. Run "kiro login" to re-authenticate.'
+                  )
                 }
-                writeAuthFile(auth)
-
-                return {
-                  refreshToken: tokens.refreshToken,
-                  clientId: tokens.clientId,
-                  idcRegion: tokens.region,
-                }
-              }
+              },
             }
           },
         },
@@ -373,8 +251,11 @@ function createPlugin(id: string) {
     },
 
     provider: {
-      id,
+      id: PLUGIN_ID,
       models: async (provider: any) => {
+        const cliAuth = readKiroCliAuth()
+        const apiRegion = cliAuth ? resolveApiRegion(cliAuth) : 'us-east-1'
+        const baseURL = `https://q.${apiRegion}.amazonaws.com`
         const models = provider?.models || {}
         const normalized: Record<string, any> = {}
 
@@ -396,4 +277,7 @@ function createPlugin(id: string) {
   }
 }
 
-export default createPlugin('kiro')
+export default {
+  id: PLUGIN_ID,
+  server: KiroPlugin,
+}

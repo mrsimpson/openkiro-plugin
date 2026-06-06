@@ -192,7 +192,7 @@ function buildCodeWhispererRequest(
       }
     }
   }
-  if ((auth as any).profileArn) request.profileArn = (auth as any).profileArn
+  if (auth.profileArn) request.profileArn = auth.profileArn
   const toolUsesInHistory = history.flatMap((h) => h.assistantResponseMessage?.toolUses || [])
   const allToolUseIdsInHistory = new Set(toolUsesInHistory.map((tu) => tu.toolUseId))
   const finalCurTrs: any[] = []
@@ -236,7 +236,7 @@ function buildCodeWhispererRequest(
     })
     finalCurTrs.push(...orphanedTrs.map((o) => o.result))
   }
-  if (history.length > 0) (request.conversationState as any).history = history
+  if (history.length > 0) request.conversationState.history = history
 
   const uim = request.conversationState.currentMessage.userInputMessage
   if (uim) {
@@ -298,6 +298,6 @@ export function transformToSdkRequest(
     streaming: true,
     effectiveModel: resolved,
     conversationId: convId,
-    region: extractRegionFromArn((auth as any).profileArn) || auth.idcRegion
+    region: extractRegionFromArn(auth.profileArn) || auth.idcRegion
   }
 }

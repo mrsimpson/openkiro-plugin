@@ -9,19 +9,6 @@ export const KIRO_CONSTANTS = {
   ORIGIN_AI_EDITOR: 'AI_EDITOR',
 };
 
-export const KIRO_AUTH_SERVICE = {
-  ENDPOINT: 'https://prod.{{region}}.auth.desktop.kiro.dev',
-  SSO_OIDC_ENDPOINT: 'https://oidc.{{region}}.amazonaws.com',
-  BUILDER_ID_START_URL: 'https://view.awsapps.com/start',
-  USER_INFO_URL: 'https://view.awsapps.com/api/user/info',
-  SCOPES: [
-    'codewhisperer:completions',
-    'codewhisperer:analysis',
-    'codewhisperer:conversations',
-    'codewhisperer:transformations',
-    'codewhisperer:taskassist'
-  ]
-}
 
 export const MODEL_MAPPING: Record<string, string> = {
   // Claude Haiku
@@ -46,8 +33,8 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-opus-4-6-1m-thinking': 'claude-opus-4.6-1m',
   'claude-opus-4-7': 'claude-opus-4.7',
   'claude-opus-4-7-thinking': 'claude-opus-4.7',
-  // Auto — resolves to a concrete model on the server side
-  auto: 'claude-sonnet-4.6',
+  // Auto — resolved server-side
+  auto: 'auto',
   // Open weight models
   'deepseek-3.2': 'deepseek-3.2',
   'glm-5': 'glm-5',
@@ -57,13 +44,6 @@ export const MODEL_MAPPING: Record<string, string> = {
 };
 
 export const SUPPORTED_MODELS = Object.keys(MODEL_MAPPING);
-
-export function normalizeRegion(region: string | undefined): string {
-  if (!region) {
-    return 'us-east-1'
-  }
-  return region
-}
 
 export function buildUrl(template: string, region: string): string {
   const url = template.replace('{{region}}', region)
@@ -84,3 +64,4 @@ export function extractRegionFromArn(arn: string | undefined): string | undefine
   if (typeof region !== 'string' || !region) return undefined
   return region
 }
+

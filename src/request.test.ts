@@ -124,7 +124,7 @@ describe('request', () => {
         auth
       )
 
-      expect(result.effectiveModel).not.toBe('auto')
+      expect(result.effectiveModel).toBe('auto')
     })
 
     it('should reject unsupported model names', () => {
