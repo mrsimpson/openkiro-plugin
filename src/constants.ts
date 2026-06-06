@@ -46,8 +46,8 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-opus-4-6-1m-thinking': 'claude-opus-4.6-1m',
   'claude-opus-4-7': 'claude-opus-4.7',
   'claude-opus-4-7-thinking': 'claude-opus-4.7',
-  // Auto
-  auto: 'auto',
+  // Auto — resolves to a concrete model on the server side
+  auto: 'claude-sonnet-4.6',
   // Open weight models
   'deepseek-3.2': 'deepseek-3.2',
   'glm-5': 'glm-5',

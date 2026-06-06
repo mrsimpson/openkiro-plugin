@@ -5,6 +5,7 @@ import { refreshAccessToken, KiroTokenRefreshError } from './token.js'
 import { authorizeKiroIDC, pollKiroIDCToken } from './oauth-idc.js'
 import { transformToSdkRequest } from './request.js'
 import { createSdkClient } from './sdk-client.js'
+import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
 import { transformSdkStream } from './streaming/sdk-stream-transformer.js'
 import type { KiroConfig, KiroAuthDetails } from './types.js'
 import { KiroConfigSchema } from './types.js'
@@ -50,6 +51,15 @@ function writeAuthFile(auth: Record<string, any>): void {
   }
 }
 
+function bootstrapAuthIfNeeded(id: string): void {
+  const auth = readAuthFile()
+  if (!auth[id]) {
+    // Write a placeholder entry so OpenCode knows to call the auth loader on startup
+    auth[id] = { placeholder: true }
+    writeAuthFile(auth)
+  }
+}
+
 function loadConfig(): KiroConfig {
   if (cachedConfig) return cachedConfig
 
@@ -77,8 +87,14 @@ function loadConfig(): KiroConfig {
     // Ignore errors reading project config
   }
 
-  // Merge: project wins over user
-  const merged = { ...userConfig, ...projectConfig }
+  // Merge: defaults < user < project
+  const merged = {
+    default_region: 'us-east-1',
+    idc_start_url: 'https://view.awsapps.com/start',
+    idc_region: 'us-east-1',
+    ...userConfig,
+    ...projectConfig,
+  }
 
   // Validate
   const validated = KiroConfigSchema.parse(merged)
@@ -86,199 +102,298 @@ function loadConfig(): KiroConfig {
   return validated
 }
 
-const plugin = {
-  name: 'kiro',
-  version: '0.1.0',
+function createPlugin(id: string) {
+  const config = loadConfig()
+  const baseURL = `https://q.${config.default_region}.amazonaws.com`
 
-  config: {
-    schema: KiroConfigSchema,
-  },
+  return {
+    config: async (input: any) => {
+      // Bootstrap auth entry for seamless startup
+      bootstrapAuthIfNeeded(id)
 
-  auth: {
-    methods: [
-      {
-        id: 'idc',
-        name: 'AWS IAM Identity Center (IDC)',
-        description: 'Authenticate via IDC device code flow',
-        handler: async (): Promise<{ refreshToken: string; clientId: string; clientSecret: string; idcRegion: string }> => {
-          const config = loadConfig()
-          
-          // Step 1: Start device code flow
-          const authResp = await authorizeKiroIDC(config.idc_region as any, config.idc_start_url)
-          
-          // Step 2: Poll for tokens
-          const tokens = await pollKiroIDCToken(
-            authResp.clientId,
-            authResp.clientSecret,
-            authResp.deviceCode,
-            authResp.interval,
-            authResp.expiresIn,
-            authResp.region
-          )
-          
-          // Step 3: Store in auth.json
-          const auth = readAuthFile()
-          auth.kiro = {
-            refreshToken: encodeRefreshToken(
-              tokens.refreshToken,
-              tokens.clientId,
-              tokens.clientSecret,
-              tokens.region
-            ),
-            clientId: tokens.clientId,
-            clientSecret: tokens.clientSecret,
-            idcRegion: tokens.region,
-          }
-          writeAuthFile(auth)
-          
-          return {
-            refreshToken: tokens.refreshToken,
-            clientId: tokens.clientId,
-            clientSecret: tokens.clientSecret,
-            idcRegion: tokens.region,
-          }
-        },
-      },
-    ],
-
-    loader: async (authData: { auth: { refreshToken?: string; clientId?: string; clientSecret?: string; idcRegion?: string } }): Promise<{ apiKey: string; baseURL: string; fetch: typeof fetch }> => {
-      const config = loadConfig()
-      const storedToken = authData.auth.refreshToken
-
-      if (!storedToken) {
-        throw new Error('No stored refresh token found')
+      if (!input.provider) input.provider = {}
+      if (!input.provider[id]) input.provider[id] = {}
+      input.provider[id].npm = '@ai-sdk/openai-compatible'
+      input.provider[id].api = baseURL
+      input.provider[id].models = {
+        'auto': { name: 'Auto', limit: { context: 200000, output: 64000 }, modalities: { input: ['text', 'image'], output: ['text'] } },
+        'claude-sonnet-4-5': { name: 'Claude Sonnet 4.5', limit: { context: 200000, output: 64000 }, modalities: { input: ['text', 'image'], output: ['text'] } },
+        'claude-sonnet-4-6': { name: 'Claude Sonnet 4.6', limit: { context: 1000000, output: 64000 }, modalities: { input: ['text', 'image'], output: ['text'] } },
+        'claude-opus-4-7': { name: 'Claude Opus 4.7', limit: { context: 1000000, output: 64000 }, modalities: { input: ['text', 'image'], output: ['text'] } },
       }
+    },
 
-      // Decode the stored token
-      let decoded: any
-      try {
-        decoded = decodeRefreshToken(storedToken)
-      } catch (e) {
-        throw new Error(`Failed to decode refresh token: ${e instanceof Error ? e.message : 'Unknown error'}`)
-      }
+    auth: {
+      provider: id,
+      loader: async (getAuth: any) => {
+        await getAuth()
 
-      // Check if access token is expired
-      const expiresAt = authData.auth.clientSecret ? parseInt(authData.auth.clientSecret) : Date.now() + 3600000
-      let accessToken = ''
-      
-      if (accessTokenExpired(expiresAt)) {
-        // Refresh the token
+        const authFile = readAuthFile()
+        const storedData = authFile[id]
+
+        if (!storedData || !storedData.refreshToken) {
+          throw new Error('No stored refresh token found')
+        }
+
+        // Decode the stored token
+        let decoded: any
         try {
-          const refreshed = await refreshAccessToken(
-            decoded.refreshToken,
-            decoded.clientId,
-            decoded.clientSecret,
-            decoded.idcRegion || config.idc_region
-          )
-          accessToken = refreshed.accessToken
-          
-          // Update stored token in auth.json with new tokens
-          const auth = readAuthFile()
-          if (auth.kiro) {
-            auth.kiro.refreshToken = encodeRefreshToken(
+          decoded = decodeRefreshToken(storedData.refreshToken)
+        } catch (e) {
+          throw new Error(`Failed to decode refresh token: ${e instanceof Error ? e.message : 'Unknown error'}`)
+        }
+
+        // Get initial access token
+        let accessToken = ''
+        let expiresAt = storedData.expiresAt || 0
+
+        if (accessTokenExpired(expiresAt)) {
+          try {
+            const refreshed = await refreshAccessToken(
               decoded.refreshToken,
               decoded.clientId,
               decoded.clientSecret,
-              decoded.idcRegion || config.idc_region
+              config.idc_region
             )
-            auth.kiro.clientSecret = String(refreshed.expiresAt)
+            accessToken = refreshed.accessToken
+            expiresAt = refreshed.expiresAt
+
+            // Update stored auth with new expiresAt
+            const auth = readAuthFile()
+            if (auth[id]) {
+              auth[id].expiresAt = refreshed.expiresAt
+              writeAuthFile(auth)
+            }
+          } catch (e) {
+            // On refresh failure, clear the auth entry so user must re-authenticate
+            const auth = readAuthFile()
+            delete auth[id]
             writeAuthFile(auth)
+
+            throw new KiroTokenRefreshError(
+              `Token refresh failed: ${e instanceof Error ? e.message : 'Unknown error'}`,
+              'REFRESH_FAILED'
+            )
           }
-        } catch (e) {
-          // On refresh failure, clear the auth entry so user must re-authenticate
-          const auth = readAuthFile()
-          delete auth.kiro
-          writeAuthFile(auth)
-          
-          throw new KiroTokenRefreshError(
-            `Token refresh failed: ${e instanceof Error ? e.message : 'Unknown error'}`,
-            'REFRESH_FAILED'
-          )
-        }
-      }
-
-      // Return auth payload with custom fetch interceptor
-      const baseURL = `https://q.${config.default_region}.amazonaws.com`
-      const apiKey = ''
-
-      // Create custom fetch that intercepts CodeWhisperer URLs
-      const customFetch: typeof fetch = async (resource, init) => {
-        const url = typeof resource === 'string' ? resource : (resource as any).url
-        const isCodeWhispererUrl = /q\..*\.amazonaws\.com/.test(url)
-
-        if (!isCodeWhispererUrl) {
-          // Pass through to native fetch
-          return globalThis.fetch(resource, init)
         }
 
-        // Transform OpenAI request to CodeWhisperer format
-        const body = init?.body ? (typeof init.body === 'string' ? JSON.parse(init.body) : init.body) : {}
-        const model = body.model || 'claude-opus-4.5'
+        // Create custom fetch that intercepts CodeWhisperer URLs
+        const customFetch: typeof fetch = async (resource, init) => {
+          const url = typeof resource === 'string' ? resource : (resource as any).url
+          const isCodeWhispererUrl = /q\..*\.amazonaws\.com/.test(url)
 
-        const sdkRequest = transformToSdkRequest(body, model, {
-          refreshToken: decoded.refreshToken,
-          clientId: decoded.clientId,
-          clientSecret: decoded.clientSecret,
-          idcRegion: decoded.idcRegion || config.idc_region,
-          expiresAt,
-        })
+          if (!isCodeWhispererUrl) {
+            // Pass through to native fetch
+            return globalThis.fetch(resource, init)
+          }
 
-        // Create SDK client
-        const sdkClient = createSdkClient(
-          {
+          // Check token expiry and refresh if needed before each request
+          if (accessTokenExpired(expiresAt)) {
+            try {
+              const refreshed = await refreshAccessToken(
+                decoded.refreshToken,
+                decoded.clientId,
+                decoded.clientSecret,
+                config.idc_region
+              )
+              accessToken = refreshed.accessToken
+              expiresAt = refreshed.expiresAt
+
+              // Persist the new expiresAt
+              const auth = readAuthFile()
+              if (auth[id]) {
+                auth[id].expiresAt = refreshed.expiresAt
+                writeAuthFile(auth)
+              }
+            } catch (e) {
+              throw new KiroTokenRefreshError(
+                `Token refresh failed mid-session: ${e instanceof Error ? e.message : 'Unknown error'}`,
+                'REFRESH_FAILED'
+              )
+            }
+          }
+
+          // Transform OpenAI request to CodeWhisperer format
+          const body = init?.body ? (typeof init.body === 'string' ? JSON.parse(init.body) : init.body) : {}
+          const model = body.model || 'claude-sonnet-4-5'
+
+          // Detect thinking mode from model name or providerOptions
+          const think = model.endsWith('-thinking') || !!body.providerOptions?.thinkingConfig
+          const budget = body.providerOptions?.thinkingConfig?.thinkingBudget || 20000
+
+          const sdkRequest = transformToSdkRequest(body, model, {
             refreshToken: decoded.refreshToken,
             clientId: decoded.clientId,
             clientSecret: decoded.clientSecret,
-            idcRegion: decoded.idcRegion || config.idc_region,
+            idcRegion: config.idc_region,
             expiresAt,
-          },
-          config.default_region
-        )
+          }, think, budget)
 
-        // Call SDK
-        const sdkResponse = await (sdkClient as any).generateAssistantResponse(sdkRequest.conversationState)
+          // Create SDK client using fresh accessToken
+          const sdkClient = createSdkClient(
+            { access: accessToken } as KiroAuthDetails,
+            config.default_region
+          )
 
-        // Stream response back as OpenAI SSE
-        const stream = transformSdkStream(sdkResponse, model, sdkRequest.conversationId)
+          // Retry logic for transient errors (429, 5xx)
+          const maxAttempts = 3
+          let lastError: any = null
 
-        // Convert async generator to readable stream
-        const readable = new ReadableStream({
-          async start(controller) {
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-              for await (const chunk of stream) {
-                const line = `data: ${JSON.stringify(chunk)}\n\n`
-                controller.enqueue(new TextEncoder().encode(line))
+              // Use Command pattern via client.send()
+              const command = new GenerateAssistantResponseCommand({
+                conversationState: sdkRequest.conversationState,
+                profileArn: sdkRequest.profileArn
+              })
+              const sdkResponse = await sdkClient.send(command)
+
+              // Stream response back as OpenAI SSE
+              const stream = transformSdkStream(sdkResponse, model, sdkRequest.conversationId)
+
+              // Convert async generator to readable stream
+              const readable = new ReadableStream({
+                async start(controller) {
+                  try {
+                    for await (const chunk of stream) {
+                      const line = `data: ${JSON.stringify(chunk)}\n\n`
+                      controller.enqueue(new TextEncoder().encode(line))
+                    }
+                    controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+                    controller.close()
+                  } catch (e) {
+                    controller.error(e)
+                  }
+                },
+              })
+
+              return new Response(readable, {
+                status: 200,
+                headers: {
+                  'Content-Type': 'text/event-stream',
+                  'Cache-Control': 'no-cache',
+                  'Connection': 'keep-alive',
+                },
+              })
+            } catch (e: any) {
+              lastError = e
+              const status = e?.statusCode || e?.$metadata?.httpStatusCode || 0
+              const isRetryable = status === 429 || (status >= 500 && status < 600)
+
+              if (!isRetryable || attempt >= maxAttempts) {
+                throw e
               }
-              controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
-              controller.close()
-            } catch (e) {
-              controller.error(e)
+
+              // Exponential backoff for rate limit / throttling errors
+              const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000)
+              await new Promise(resolve => setTimeout(resolve, delay))
+            }
+          }
+
+          throw lastError
+        }
+
+        return { apiKey: '', baseURL, fetch: customFetch }
+      },
+
+      methods: [
+        {
+          label: 'AWS IAM Identity Center',
+          type: 'oauth' as const,
+          prompts: [
+            {
+              type: 'text' as const,
+              key: 'start_url',
+              message: 'Enter your IAM Identity Center start URL',
+              placeholder: 'https://d-xxxxxxxxxx.awsapps.com/start',
+              validate: (value: string) => {
+                if (!value) return 'Start URL is required'
+                try { new URL(value) } catch { return 'Must be a valid URL' }
+                return undefined
+              }
+            },
+            {
+              type: 'text' as const,
+              key: 'idc_region',
+              message: 'Enter your IDC region',
+              placeholder: 'us-east-1',
+              validate: (value: string) => {
+                if (!value) return 'Region is required'
+                return undefined
+              }
+            },
+          ],
+          authorize: async (inputs: Record<string, string>) => {
+            const startUrl = inputs.start_url || config.idc_start_url
+            const idcRegion = inputs.idc_region || config.idc_region
+
+            // Start device code flow
+            const authResp = await authorizeKiroIDC(idcRegion as any, startUrl)
+
+            return {
+              url: authResp.verificationUriComplete || authResp.verificationUrl,
+              instructions: `Enter code: ${authResp.userCode}`,
+              method: 'auto' as const,
+              callback: async () => {
+                // Poll for tokens
+                const tokens = await pollKiroIDCToken(
+                  authResp.clientId,
+                  authResp.clientSecret,
+                  authResp.deviceCode,
+                  authResp.interval,
+                  authResp.expiresIn,
+                  authResp.region
+                )
+
+                // Store in auth.json
+                const auth = readAuthFile()
+                auth[id] = {
+                  refreshToken: encodeRefreshToken(
+                    tokens.refreshToken,
+                    tokens.clientId,
+                    tokens.clientSecret,
+                    tokens.region
+                  ),
+                  clientId: tokens.clientId,
+                  idcRegion: tokens.region,
+                  expiresAt: tokens.expiresAt,
+                }
+                writeAuthFile(auth)
+
+                return {
+                  refreshToken: tokens.refreshToken,
+                  clientId: tokens.clientId,
+                  idcRegion: tokens.region,
+                }
+              }
             }
           },
-        })
-
-        return new Response(readable, {
-          status: 200,
-          headers: {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-          },
-        })
-      }
-
-      return { apiKey, baseURL, fetch: customFetch }
+        },
+      ],
     },
-  },
 
-  provider: async (options: any) => {
-    // Provider hook is called to customize the provider behavior
-    // For now, we just return a pass-through implementation
-    return {
-      name: 'kiro',
-      id: 'kiro',
-    }
-  },
+    provider: {
+      id,
+      models: async (provider: any) => {
+        const models = provider?.models || {}
+        const normalized: Record<string, any> = {}
+
+        for (const [modelID, model] of Object.entries(models)) {
+          const modelInfo = model as any
+          normalized[modelID] = {
+            ...modelInfo,
+            api: {
+              ...(modelInfo.api || {}),
+              npm: '@ai-sdk/openai-compatible',
+              url: modelInfo.api?.url || baseURL,
+            },
+          }
+        }
+
+        return normalized
+      },
+    },
+  }
 }
 
-export default plugin
+export default createPlugin('kiro')

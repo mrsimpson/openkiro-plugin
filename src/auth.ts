@@ -1,17 +1,18 @@
 /**
- * Encode refresh token for storage (IDC format: token|clientId|clientSecret|region|idc)
+ * Encode refresh token for storage (IDC format: token|clientId|clientSecret|idc)
+ * The region is NOT embedded in the token — it comes from config.
  */
 export function encodeRefreshToken(
   refreshToken: string,
   clientId: string,
   clientSecret: string,
-  idcRegion: string
+  _idcRegion?: string
 ): string {
-  return `${refreshToken}|${clientId}|${clientSecret}|${idcRegion}|idc`;
+  return `${refreshToken}|${clientId}|${clientSecret}|idc`;
 }
 
 /**
- * Decode refresh token from storage
+ * Decode refresh token from storage (4-part format: token|clientId|clientSecret|idc)
  */
 export function decodeRefreshToken(
   encoded: string
@@ -19,17 +20,15 @@ export function decodeRefreshToken(
   refreshToken: string;
   clientId: string;
   clientSecret: string;
-  idcRegion: string;
 } {
   const parts = encoded.split('|');
-  if (parts.length < 5) {
+  if (parts.length < 4) {
     throw new Error('Invalid encoded token format');
   }
   return {
     refreshToken: parts[0]!,
     clientId: parts[1]!,
     clientSecret: parts[2]!,
-    idcRegion: parts[3]!,
   };
 }
 

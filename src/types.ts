@@ -26,6 +26,7 @@ export interface KiroAuthDetails {
   clientSecret: string;
   idcRegion: string;
   expiresAt: number;
+  access: string;
 }
 
 /**

@@ -46,7 +46,7 @@ describe('token', () => {
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
-            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Type': 'application/json',
           }),
         })
       );

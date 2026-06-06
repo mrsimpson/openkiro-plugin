@@ -8,14 +8,14 @@ export function createSdkClient(
   auth: KiroAuthDetails,
   region: string
 ): CodeWhispererStreamingClient {
-  const cacheKey = `${region}:${auth.refreshToken}`
+  const cacheKey = `${region}:${'default'}`
   const cached = clientCache.get(cacheKey)
 
-  if (cached && cached.token === auth.refreshToken) {
+  if (cached && cached.token === auth.access) {
     return cached.client
   }
 
-  const token = auth.refreshToken
+  const token = auth.access
   const client = new CodeWhispererStreamingClient({
     region,
     endpoint: `https://q.${region}.amazonaws.com`,

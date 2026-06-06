@@ -11,20 +11,17 @@ describe('auth', () => {
       const refreshToken = 'test-refresh-token';
       const clientId = 'test-client-id';
       const clientSecret = 'test-client-secret';
-      const idcRegion = 'eu-central-1';
 
       const encoded = encodeRefreshToken(
         refreshToken,
         clientId,
-        clientSecret,
-        idcRegion
+        clientSecret
       );
       const decoded = decodeRefreshToken(encoded);
 
       expect(decoded.refreshToken).toBe(refreshToken);
       expect(decoded.clientId).toBe(clientId);
       expect(decoded.clientSecret).toBe(clientSecret);
-      expect(decoded.idcRegion).toBe(idcRegion);
     });
   });
 

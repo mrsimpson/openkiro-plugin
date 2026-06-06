@@ -82,12 +82,13 @@ describe('BUG-2 & BUG-3: auth.loader must provide a fetch that refreshes tokens'
       'utf-8'
     )
 
-    // The customFetch section should NOT pass decoded.refreshToken to createSdkClient.
-    // It should pass the refreshed accessToken.
-    // Look for the SDK client creation inside customFetch:
+    // The createSdkClient call should include `access: accessToken`
+    // and should NOT pass refreshToken as the bearer token field.
     const customFetchSection = source.slice(source.indexOf('customFetch'))
 
-    // Should reference accessToken (the fresh one), not decoded.refreshToken
+    // Should pass access token to createSdkClient
+    expect(customFetchSection).toMatch(/createSdkClient\s*\([^)]*access/)
+    // Should NOT pass refreshToken as part of the createSdkClient auth object
     expect(customFetchSection).not.toMatch(/createSdkClient\s*\(\s*\{[^}]*refreshToken:\s*decoded\.refreshToken/)
   })
 
@@ -122,13 +123,12 @@ describe('BUG-2 & BUG-3: auth.loader must provide a fetch that refreshes tokens'
 
     // After `accessToken = refreshed.accessToken` (line ~173), the customFetch
     // should use `accessToken` when creating the SDK client.
-    // Currently it uses `decoded.refreshToken` instead.
     const customFetchSection = source.slice(source.indexOf('const customFetch'))
 
     // The SDK client auth object inside customFetch should reference `accessToken`
     expect(customFetchSection).toContain('accessToken')
-    // And it should NOT be using decoded.refreshToken as the bearer
-    expect(customFetchSection).not.toContain('decoded.refreshToken')
+    // createSdkClient should receive `access: accessToken`, not `refreshToken` as bearer
+    expect(customFetchSection).toMatch(/createSdkClient\s*\([^)]*access:\s*accessToken/)
   })
 })
 

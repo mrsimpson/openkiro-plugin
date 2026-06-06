@@ -22,22 +22,26 @@ export async function refreshAccessToken(
 }> {
   const url = `https://oidc.${idcRegion}.amazonaws.com/token`;
 
-  const requestBody = new URLSearchParams({
-    grant_type: 'refresh_token',
-    client_id: clientId,
-    client_secret: clientSecret,
-    refresh_token: refreshToken,
-  });
+  const requestBody = {
+    refreshToken: refreshToken,
+    clientId: clientId,
+    clientSecret: clientSecret,
+    grantType: 'refresh_token',
+  };
 
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent':
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'amz-sdk-request': 'attempt=1; max=1',
+        'x-amzn-kiro-agent-mode': 'vibe',
+        'user-agent':
           'aws-sdk-js/3.738.0 ua/2.1 os/other lang/js md/browser#unknown_unknown api/sso-oidc#3.738.0 m/E KiroIDE',
+        'Connection': 'close',
       },
-      body: requestBody.toString(),
+      body: JSON.stringify(requestBody),
     });
 
     if (!res.ok) {

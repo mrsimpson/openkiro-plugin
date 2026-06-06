@@ -1,6 +1,6 @@
 import * as crypto from 'crypto'
 import * as os from 'os'
-import { KIRO_CONSTANTS } from './constants.js'
+import { KIRO_CONSTANTS, MODEL_MAPPING, extractRegionFromArn } from './constants.js'
 import {
   buildHistory,
   extractToolNamesFromHistory,
@@ -31,9 +31,12 @@ interface TransformResult {
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
-// Stub model resolver - just returns the model as-is
 function resolveKiroModel(model: string): string {
-  return model
+  const mapped = MODEL_MAPPING[model]
+  if (!mapped) {
+    throw new Error(`Unsupported model: ${model}. Available: ${Object.keys(MODEL_MAPPING).join(', ')}`)
+  }
+  return mapped
 }
 
 function buildCodeWhispererRequest(
@@ -189,7 +192,7 @@ function buildCodeWhispererRequest(
       }
     }
   }
-  if (auth.idcRegion) request.idcRegion = auth.idcRegion
+  if ((auth as any).profileArn) request.profileArn = (auth as any).profileArn
   const toolUsesInHistory = history.flatMap((h) => h.assistantResponseMessage?.toolUses || [])
   const allToolUseIdsInHistory = new Set(toolUsesInHistory.map((tu) => tu.toolUseId))
   const finalCurTrs: any[] = []
@@ -280,20 +283,21 @@ export function transformToSdkRequest(
   budget = 20000,
   showToast?: ToastFunction
 ): any {
+  const enableThinking = think || model.endsWith('-thinking')
   const { request, resolved, convId } = buildCodeWhispererRequest(
     body,
     model,
     auth,
-    think,
+    enableThinking,
     budget,
     showToast
   )
   return {
     conversationState: request.conversationState,
-    idcRegion: request.idcRegion,
+    profileArn: request.profileArn,
     streaming: true,
     effectiveModel: resolved,
     conversationId: convId,
-    region: auth.idcRegion
+    region: extractRegionFromArn((auth as any).profileArn) || auth.idcRegion
   }
 }
