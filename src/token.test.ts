@@ -52,6 +52,38 @@ describe('token', () => {
       );
     });
 
+    it('should send JSON body with camelCase field names', async () => {
+      fetchSpy.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'tok', expires_in: 3600 }),
+      });
+
+      await refreshAccessToken('rt', 'cid', 'csec', 'us-east-1');
+
+      const [, init] = fetchSpy.mock.calls[0];
+      const body = JSON.parse(init.body);
+
+      expect(body.refreshToken).toBe('rt');
+      expect(body.clientId).toBe('cid');
+      expect(body.clientSecret).toBe('csec');
+      expect(body.grantType).toBe('refresh_token');
+    });
+
+    it('should include required headers: Accept, amz-sdk-request, x-amzn-kiro-agent-mode', async () => {
+      fetchSpy.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'tok', expires_in: 3600 }),
+      });
+
+      await refreshAccessToken('rt', 'cid', 'csec', 'us-east-1');
+
+      const [, init] = fetchSpy.mock.calls[0];
+      expect(init.headers['Accept']).toBe('application/json');
+      expect(init.headers['amz-sdk-request']).toBe('attempt=1; max=1');
+      expect(init.headers['x-amzn-kiro-agent-mode']).toBe('vibe');
+      expect(init.headers['Connection']).toBe('close');
+    });
+
     it('should throw KiroTokenRefreshError on HTTP error', async () => {
       const mockResponse = {
         ok: false,

@@ -1,113 +1,224 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest'
 
-describe('index (plugin entry)', () => {
+describe('plugin entry (index.ts)', () => {
+  let plugin: any
 
-  describe('config loader', () => {
-    it('should merge user and project kiro.json configs', () => {
-      // This test documents expected behavior:
-      // 1. Load ~/.config/opencode/kiro.json (user-global)
-      // 2. Load .opencode/kiro.json (project-level)
-      // 3. Project config overrides user config
-      // Actual implementation deferred to GREEN phase
+  beforeEach(async () => {
+    const mod = await import('./index.js')
+    plugin = mod.default
+  })
 
-      const userConfig = {
-        default_region: 'us-east-1',
-        idc_start_url: 'https://user-idc.awsapps.com/start',
-        idc_region: 'us-east-1',
-      };
+  describe('plugin interface (OpenCode contract)', () => {
+    it('config should be a hook function', () => {
+      expect(typeof plugin.config).toBe('function')
+    })
 
-      const projectConfig = {
-        default_region: 'eu-central-1',
-        idc_start_url: 'https://project-idc.awsapps.com/start',
-        idc_region: 'eu-central-1',
-        idc_profile_arn: 'arn:aws:codewhisperer:eu-central-1:123456789012:profile/test',
-      };
+    it('config hook should mutate input.provider with npm, api, and models', async () => {
+      const input = { provider: {} }
+      await plugin.config(input)
 
-      // When merged, project wins
-      const merged = { ...userConfig, ...projectConfig };
-      expect(merged.default_region).toBe('eu-central-1');
-      expect(merged.idc_profile_arn).toBe(
-        'arn:aws:codewhisperer:eu-central-1:123456789012:profile/test'
-      );
-    });
-  });
+      expect((input.provider as any).kiro).toBeDefined()
+      expect((input.provider as any).kiro.npm).toBe('@ai-sdk/openai-compatible')
+      expect((input.provider as any).kiro.api).toBeDefined()
+      expect((input.provider as any).kiro.models).toBeDefined()
+    })
 
-  describe('auth.loader', () => {
-    it('should decode stored token, check expiry, refresh if needed, and return correct shape', async () => {
-      // This test documents expected behavior:
-      // 1. Receive stored token key from opencode's auth.json
-      // 2. Decode the token (format: refreshToken|clientId|clientSecret|idcRegion)
-      // 3. Check if access token is expired
-      // 4. If expired, call refreshAccessToken via OIDC endpoint
-      // 5. Return shape: { apiKey: '', baseURL: string, fetch: customFetch }
+    it('auth.loader should accept a getAuth callback and call it', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
 
-      const storedTokenKey = 'refresh|clientId|clientSecret|eu-central-1';
+      const loaderDef = source.match(/loader:\s*async\s*\(([^)]+)\)/)
+      expect(loaderDef).not.toBeNull()
 
-      // Expected behavior:
-      // - Decode the token string
-      // - Refresh the access token
-      // - Return auth payload with custom fetch interceptor
+      const paramName = loaderDef![1].trim().split(/[:{]/)[0].trim()
+      expect(paramName).not.toMatch(/authData|auth/)
+      expect(source).toMatch(/await\s+getAuth\s*\(\s*\)/)
+    })
 
-      // Actual implementation deferred to GREEN phase
-      expect(typeof storedTokenKey).toBe('string');
-    });
+    it('auth.methods should have correct shape: { label, type, prompts, authorize }', () => {
+      const methods = plugin.auth.methods
 
-    it('should throw KiroTokenRefreshError if token refresh fails', async () => {
-      // This test documents expected behavior:
-      // If refreshAccessToken throws, the error should propagate up
-      // as KiroTokenRefreshError
+      expect(Array.isArray(methods)).toBe(true)
+      expect(methods.length).toBeGreaterThan(0)
 
-      // Actual implementation deferred to GREEN phase
-      expect(true).toBe(true);
-    });
-  });
+      const method = methods[0]
+      expect(method).toHaveProperty('label')
+      expect(method).toHaveProperty('type')
+      expect(method.type).toBe('oauth')
+      expect(method).toHaveProperty('prompts')
+      expect(Array.isArray(method.prompts)).toBe(true)
+      expect(method).toHaveProperty('authorize')
+      expect(typeof method.authorize).toBe('function')
+      expect(method).not.toHaveProperty('handler')
+      expect(method).not.toHaveProperty('id')
+    })
 
-  describe('provider.fetch interceptor', () => {
-    it('should intercept q.*.amazonaws.com URLs and route to CodeWhisperer', async () => {
-      // This test documents expected behavior:
-      // 1. Custom fetch interceptor is registered as part of auth.loader return
-      // 2. URLs matching q.*.amazonaws.com are intercepted
-      // 3. OpenAI request format is transformed to CodeWhisperer format
-      // 4. SDK client is called with transformed request
-      // 5. Response is streamed back as OpenAI SSE format
+    it('auth.methods prompts should include start_url and idc_region', () => {
+      const prompts = plugin.auth.methods[0].prompts
+      const keys = prompts.map((p: any) => p.key)
 
-      // Example:
-      // fetch('https://q.us-west-2.amazonaws.com/chat/completions', {
-      //   method: 'POST',
-      //   body: JSON.stringify(openaiRequest)
-      // })
-      // Should be transformed and sent to CodeWhisperer SDK
+      expect(keys).toContain('start_url')
+      expect(keys).toContain('idc_region')
 
-      // Actual implementation deferred to GREEN phase
-      expect(true).toBe(true);
-    });
+      for (const prompt of prompts) {
+        expect(prompt).toHaveProperty('type')
+        expect(prompt.type).toBe('text')
+        expect(prompt).toHaveProperty('key')
+        expect(prompt).toHaveProperty('message')
+      }
+    })
 
-    it('should pass through all other URLs to native fetch', async () => {
-      // This test documents expected behavior:
-      // URLs not matching the CodeWhisperer pattern should be passed through
-      // to the native fetch implementation unchanged
+    it('auth.methods authorize should be a callable function', () => {
+      expect(typeof plugin.auth.methods[0].authorize).toBe('function')
+    })
 
-      // Example:
-      // fetch('https://api.example.com/data') -> native fetch
-      // fetch('https://openai.com/api/chat') -> native fetch
+    it('provider should be an object with a models function', () => {
+      const provider = plugin.provider
 
-      // Actual implementation deferred to GREEN phase
-      expect(true).toBe(true);
-    });
-  });
+      if (typeof provider === 'function') {
+        expect.fail('provider should be an object with a models function, not an async function')
+      }
 
-  describe('auth.methods', () => {
-    it('should have single IDC OAuth method', () => {
-      // This test documents expected behavior:
-      // Plugin should expose a single auth method: IDC OAuth device-code flow
-      // Method should:
-      // 1. Prompt user to open browser at IDC start URL
-      // 2. Poll for token completion
-      // 3. Store token in opencode's auth.json
-      // 4. Optionally prompt for idc_profile_arn if not in config
+      expect(provider).toHaveProperty('models')
+      expect(typeof provider.models).toBe('function')
+    })
+  })
 
-      // Actual implementation deferred to GREEN phase
-      expect(true).toBe(true);
-    });
-  });
-});
+  describe('token refresh in customFetch', () => {
+    it('customFetch should pass access token to createSdkClient', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      const customFetchSection = source.slice(source.indexOf('customFetch'))
+      expect(customFetchSection).toMatch(/createSdkClient\s*\([^)]*access/)
+      expect(customFetchSection).not.toMatch(/createSdkClient\s*\(\s*\{[^}]*refreshToken:\s*decoded\.refreshToken/)
+    })
+
+    it('customFetch should refresh token before each request if expired', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      const customFetchBody = source.slice(
+        source.indexOf('const customFetch'),
+        source.indexOf('return { apiKey')
+      )
+
+      expect(customFetchBody).toMatch(/accessTokenExpired|expiresAt.*Date\.now|refreshAccessToken/)
+    })
+
+    it('refreshed accessToken should be used in SDK client creation', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      const customFetchSection = source.slice(source.indexOf('const customFetch'))
+      expect(customFetchSection).toContain('accessToken')
+      expect(customFetchSection).toMatch(/createSdkClient\s*\([^)]*access:\s*accessToken/)
+    })
+  })
+
+  describe('clientSecret field integrity', () => {
+    it('should NOT parse clientSecret as a number for expiresAt', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      expect(source).not.toMatch(/parseInt\(authData\.auth\.clientSecret\)/)
+      expect(source).not.toMatch(/clientSecret.*expiresAt|expiresAt.*clientSecret.*parseInt/)
+    })
+
+    it('should NOT write expiresAt into clientSecret', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      expect(source).not.toMatch(/clientSecret\s*=\s*String\(.*expiresAt/)
+    })
+  })
+
+  describe('retry logic', () => {
+    it('customFetch should contain retry logic for transient errors', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      const customFetchBody = source.slice(
+        source.indexOf('const customFetch'),
+        source.indexOf('return { apiKey')
+      )
+
+      expect(customFetchBody).toMatch(/retry|maxAttempts|while\s*\(|for\s*\(/)
+    })
+
+    it('should handle 429 rate limit responses', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      expect(source).toMatch(/429|rate.?limit|throttl/i)
+    })
+  })
+
+  describe('auth bootstrap', () => {
+    it('config hook should bootstrap auth entry for seamless startup', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      expect(source).toMatch(/bootstrap|writeAuthFile.*placeholder|ensureAuth/)
+    })
+  })
+
+  describe('thinking mode detection in customFetch', () => {
+    it('should detect thinking mode from model name and providerOptions', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      const customFetchBody = source.slice(
+        source.indexOf('const customFetch'),
+        source.indexOf('return { apiKey')
+      )
+
+      expect(customFetchBody).toContain('providerOptions')
+      expect(customFetchBody).toMatch(/endsWith.*thinking|thinking.*model/)
+    })
+  })
+
+  describe('SDK command pattern', () => {
+    it('should use GenerateAssistantResponseCommand via client.send()', () => {
+      const fs = require('fs')
+      const source = fs.readFileSync(
+        require('path').resolve(__dirname, './index.ts'),
+        'utf-8'
+      )
+
+      expect(source).toContain('GenerateAssistantResponseCommand')
+      expect(source).toMatch(/\.send\s*\(/)
+      expect(source).not.toMatch(/as any\)\.generateAssistantResponse/)
+    })
+  })
+})
