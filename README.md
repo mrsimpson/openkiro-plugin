@@ -31,6 +31,8 @@ Then `/connect` in OpenCode and select the Kiro option.
 
 Append `-thinking` to any Claude model for extended thinking mode (e.g. `claude-sonnet-4-6-thinking`).
 
+The model list is a static mapping in `src/constants.ts` (`MODEL_MAPPING`). The CodeWhisperer SDK has no model-discovery endpoint, so available models are maintained manually. When AWS adds new models to the Kiro backend, add a new entry there — the key is what users type in OpenCode, the value is what the API expects (typically hyphens → dots for Claude models).
+
 ## How it works
 
 ### Authentication
