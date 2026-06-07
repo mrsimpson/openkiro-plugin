@@ -31,28 +31,3 @@ export interface CodeWhispererMessage {
   };
 }
 
-export interface CodeWhispererRequest {
-  conversationState: {
-    chatTriggerType: string;
-    conversationId: string;
-    currentMessage: {
-      userInputMessage: {
-        content: string;
-        modelId: string;
-        origin: string;
-        images?: any[];
-        userInputMessageContext?: {
-          toolResults?: any[];
-          tools?: any[];
-        };
-      };
-    };
-    history?: CodeWhispererMessage[];
-  };
-  profileArn?: string;
-}
-
-export interface CodeWhispererResponse {
-  content: string;
-  stopReason?: string;
-}

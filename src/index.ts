@@ -36,8 +36,6 @@ function bootstrapAuthIfNeeded(): void {
 
 function getApiRegionOverride(): string | undefined {
   try {
-    const fs = require('fs')
-    const path = require('path')
     const configPath = path.join(
       process.env.HOME || process.env.USERPROFILE || '',
       '.config', 'opencode', 'kiro.json'
@@ -142,7 +140,7 @@ const KiroPlugin = async (_input: any) => {
           const body = init?.body ? (typeof init.body === 'string' ? JSON.parse(init.body) : init.body) : {}
           const model = body.model || 'claude-sonnet-4-6'
 
-          const think = model.endsWith('-thinking') || !!body.providerOptions?.thinkingConfig
+          const think = !!body.providerOptions?.thinkingConfig
           const budget = body.providerOptions?.thinkingConfig?.thinkingBudget || 20000
 
           const sdkRequest = transformToSdkRequest(body, model, {
@@ -168,13 +166,14 @@ const KiroPlugin = async (_input: any) => {
               const sdkResponse = await sdkClient.send(command)
               const stream = transformSdkStream(sdkResponse, model, sdkRequest.conversationId)
 
+              const encoder = new TextEncoder()
               const readable = new ReadableStream({
                 async start(controller) {
                   try {
                     for await (const chunk of stream) {
-                      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(chunk)}\n\n`))
+                      controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
                     }
-                    controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+                    controller.enqueue(encoder.encode('data: [DONE]\n\n'))
                     controller.close()
                   } catch (e) {
                     controller.error(e)

@@ -8,17 +8,8 @@ import type { CodeWhispererMessage } from '../types.js'
 import { getContentText } from './message-transformer.js'
 import { deduplicateToolResults } from './tool-transformer.js'
 
-/**
- * Collapse agentic loop sequences in the built history.
- *
- * Each agentic iteration gets a fresh conversationId, so the model re-derives its preamble
- * (intent detection, greeting) every iteration. When replayed for the next user turn, the
- * model sees duplicate preambles and gets confused.
- *
- * Strips text from intermediate ASST(toolUses)→USER(toolResults) pairs, keeping only the
- * first assistant text and all tool_use/tool_result pairs.
- */
-export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhispererMessage[] {
+// Strips duplicate preambles from intermediate tool-calling rounds to avoid confusing the model.
+function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhispererMessage[] {
   if (history.length < 4) return history
 
   const result: CodeWhispererMessage[] = []

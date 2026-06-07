@@ -136,7 +136,7 @@ describe('plugin entry (index.ts)', () => {
       expect(source).toMatch(/\.send\s*\(/)
     })
 
-    it('should detect thinking mode from model name', () => {
+    it('should pass thinking config from providerOptions to transformToSdkRequest', () => {
       const fs = require('fs')
       const source = fs.readFileSync(
         require('path').resolve(__dirname, './index.ts'),
@@ -148,8 +148,8 @@ describe('plugin entry (index.ts)', () => {
         source.indexOf('return { apiKey')
       )
 
-      expect(customFetchBody).toMatch(/endsWith.*thinking/)
       expect(customFetchBody).toContain('providerOptions')
+      expect(customFetchBody).toContain('transformToSdkRequest')
     })
   })
 })

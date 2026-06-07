@@ -1,6 +1,6 @@
 import { StreamEvent, StreamState } from './types.js'
 
-export function ensureBlockStart(
+function ensureBlockStart(
   blockType: 'thinking' | 'text',
   streamState: StreamState
 ): StreamEvent[] {

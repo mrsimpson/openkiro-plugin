@@ -43,18 +43,6 @@ export const MODEL_MAPPING: Record<string, string> = {
   'qwen3-coder-next': 'qwen3-coder-next',
 };
 
-export const SUPPORTED_MODELS = Object.keys(MODEL_MAPPING);
-
-export function buildUrl(template: string, region: string): string {
-  const url = template.replace('{{region}}', region)
-  try {
-    new URL(url)
-    return url
-  } catch {
-    throw new Error(`Invalid URL generated: ${url}`)
-  }
-}
-
 export function extractRegionFromArn(arn: string | undefined): string | undefined {
   if (!arn) return undefined
   const parts = arn.split(':')
