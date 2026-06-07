@@ -38,6 +38,7 @@ Append `-thinking` to any Claude model for extended thinking mode (e.g. `claude-
 The plugin reads credentials directly from the Kiro CLI's SQLite database (`~/Library/Application Support/kiro-cli/data.sqlite3` on macOS). No separate OAuth flow or configuration is needed.
 
 On every request, the plugin:
+
 1. Reads the current access token from the Kiro CLI DB
 2. If expired (within 2-minute buffer), refreshes it via the OIDC token endpoint
 3. Passes the token to the CodeWhisperer streaming SDK

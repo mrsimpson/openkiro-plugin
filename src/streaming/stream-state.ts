@@ -1,65 +1,62 @@
-import { StreamEvent, StreamState } from './types.js'
+import { StreamEvent, StreamState } from "./types.js";
 
-function ensureBlockStart(
-  blockType: 'thinking' | 'text',
-  streamState: StreamState
-): StreamEvent[] {
-  if (blockType === 'thinking') {
-    if (streamState.thinkingBlockIndex != null) return []
-    const idx = streamState.nextBlockIndex++
-    streamState.thinkingBlockIndex = idx
+function ensureBlockStart(blockType: "thinking" | "text", streamState: StreamState): StreamEvent[] {
+  if (blockType === "thinking") {
+    if (streamState.thinkingBlockIndex != null) return [];
+    const idx = streamState.nextBlockIndex++;
+    streamState.thinkingBlockIndex = idx;
     return [
       {
-        type: 'content_block_start',
+        type: "content_block_start",
         index: idx,
-        content_block: { type: 'thinking', thinking: '' }
-      }
-    ]
+        content_block: { type: "thinking", thinking: "" },
+      },
+    ];
   }
-  if (blockType === 'text') {
-    if (streamState.textBlockIndex != null) return []
-    const idx = streamState.nextBlockIndex++
-    streamState.textBlockIndex = idx
+  if (blockType === "text") {
+    if (streamState.textBlockIndex != null) return [];
+    const idx = streamState.nextBlockIndex++;
+    streamState.textBlockIndex = idx;
     return [
       {
-        type: 'content_block_start',
+        type: "content_block_start",
         index: idx,
-        content_block: { type: 'text', text: '' }
-      }
-    ]
+        content_block: { type: "text", text: "" },
+      },
+    ];
   }
-  return []
+  return [];
 }
 
 export function stopBlock(index: number | null, streamState: StreamState): StreamEvent[] {
-  if (index == null) return []
-  if (streamState.stoppedBlocks.has(index)) return []
-  streamState.stoppedBlocks.add(index)
-  return [{ type: 'content_block_stop', index }]
+  if (index == null) return [];
+  if (streamState.stoppedBlocks.has(index)) return [];
+  streamState.stoppedBlocks.add(index);
+  return [{ type: "content_block_stop", index }];
 }
 
 export function createTextDeltaEvents(text: string, streamState: StreamState): StreamEvent[] {
-  if (!text) return []
-  const events: StreamEvent[] = []
-  events.push(...ensureBlockStart('text', streamState))
+  if (!text) return [];
+  const events: StreamEvent[] = [];
+  events.push(...ensureBlockStart("text", streamState));
   events.push({
-    type: 'content_block_delta',
+    type: "content_block_delta",
     index: streamState.textBlockIndex!,
-    delta: { type: 'text_delta', text }
-  })
-  return events
+    delta: { type: "text_delta", text },
+  });
+  return events;
 }
 
 export function createThinkingDeltaEvents(
   thinking: string,
-  streamState: StreamState
+  streamState: StreamState,
 ): StreamEvent[] {
-  const events: StreamEvent[] = []
-  events.push(...ensureBlockStart('thinking', streamState))
+  const events: StreamEvent[] = [];
+  events.push(...ensureBlockStart("thinking", streamState));
   events.push({
-    type: 'content_block_delta',
+    type: "content_block_delta",
     index: streamState.thinkingBlockIndex!,
-    delta: { type: 'thinking_delta', thinking }
-  })
-  return events
+    delta: { type: "thinking_delta", thinking },
+  });
+  return events;
 }

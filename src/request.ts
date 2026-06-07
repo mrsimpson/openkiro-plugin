@@ -1,42 +1,41 @@
-import * as crypto from 'crypto'
-import * as os from 'os'
-import { KIRO_CONSTANTS, MODEL_MAPPING, extractRegionFromArn } from './constants.js'
+import * as crypto from "crypto";
+import { KIRO_CONSTANTS, MODEL_MAPPING, extractRegionFromArn } from "./constants.js";
 import {
   buildHistory,
   extractToolNamesFromHistory,
   historyHasToolCalling,
-  injectSystemPrompt
-} from './transformers/history-builder.js'
+  injectSystemPrompt,
+} from "./transformers/history-builder.js";
 import {
   findOriginalToolCall,
   getContentText,
-  mergeAdjacentMessages
-} from './transformers/message-transformer.js'
+  mergeAdjacentMessages,
+} from "./transformers/message-transformer.js";
 import {
   convertToolsToCodeWhisperer,
-  deduplicateToolResults
-} from './transformers/tool-transformer.js'
+  deduplicateToolResults,
+} from "./transformers/tool-transformer.js";
 import {
   convertImagesToKiroFormat,
   extractAllImages,
-  extractTextFromParts
-} from './image-handler.js'
-import type { KiroAuthDetails } from './types.js'
+  extractTextFromParts,
+} from "./image-handler.js";
+import type { KiroAuthDetails } from "./types.js";
 
 interface TransformResult {
-  request: any
-  resolved: string
-  convId: string
+  request: any;
+  resolved: string;
+  convId: string;
 }
 
-type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
-
 function resolveKiroModel(model: string): string {
-  const mapped = MODEL_MAPPING[model]
+  const mapped = MODEL_MAPPING[model];
   if (!mapped) {
-    throw new Error(`Unsupported model: ${model}. Available: ${Object.keys(MODEL_MAPPING).join(', ')}`)
+    throw new Error(
+      `Unsupported model: ${model}. Available: ${Object.keys(MODEL_MAPPING).join(", ")}`,
+    );
   }
-  return mapped
+  return mapped;
 }
 
 function buildCodeWhispererRequest(
@@ -45,139 +44,138 @@ function buildCodeWhispererRequest(
   auth: KiroAuthDetails,
   think = false,
   budget = 20000,
-  showToast?: ToastFunction
 ): TransformResult {
-  const req = typeof body === 'string' ? JSON.parse(body) : body
-  const { messages, tools, system } = req
-  const convId = crypto.randomUUID()
-  if (!messages || messages.length === 0) throw new Error('No messages')
-  const resolved = resolveKiroModel(model)
-  const systemMsgs = messages.filter((m: any) => m.role === 'system')
-  const otherMsgs = messages.filter((m: any) => m.role !== 'system')
-  let sys = system || ''
+  const req = typeof body === "string" ? JSON.parse(body) : body;
+  const { messages, tools, system } = req;
+  const convId = crypto.randomUUID();
+  if (!messages || messages.length === 0) throw new Error("No messages");
+  const resolved = resolveKiroModel(model);
+  const systemMsgs = messages.filter((m: any) => m.role === "system");
+  const otherMsgs = messages.filter((m: any) => m.role !== "system");
+  let sys = system || "";
   if (systemMsgs.length > 0) {
-    const extractedSystem = systemMsgs.map((m: any) => getContentText(m)).join('\n\n')
-    sys = sys ? `${sys}\n\n${extractedSystem}` : extractedSystem
+    const extractedSystem = systemMsgs.map((m: any) => getContentText(m)).join("\n\n");
+    sys = sys ? `${sys}\n\n${extractedSystem}` : extractedSystem;
   }
   if (think) {
-    const pfx = `<thinking_mode>enabled</thinking_mode><max_thinking_length>${budget}</max_thinking_length>`
-    sys = sys.includes('<thinking_mode>') ? sys : sys ? `${pfx}\n${sys}` : pfx
+    const pfx = `<thinking_mode>enabled</thinking_mode><max_thinking_length>${budget}</max_thinking_length>`;
+    sys = sys.includes("<thinking_mode>") ? sys : sys ? `${pfx}\n${sys}` : pfx;
   }
-  const msgs = mergeAdjacentMessages([...otherMsgs])
-  const lastMsg = msgs[msgs.length - 1]
-  if (lastMsg && lastMsg.role === 'assistant' && getContentText(lastMsg) === '{') msgs.pop()
-  const cwTools = tools ? convertToolsToCodeWhisperer(tools) : []
-  let history = buildHistory(msgs, resolved)
+  const msgs = mergeAdjacentMessages([...otherMsgs]);
+  const lastMsg = msgs[msgs.length - 1];
+  if (lastMsg && lastMsg.role === "assistant" && getContentText(lastMsg) === "{") msgs.pop();
+  const cwTools = tools ? convertToolsToCodeWhisperer(tools) : [];
+  let history = buildHistory(msgs, resolved);
 
-  const curMsg = msgs[msgs.length - 1]
-  if (!curMsg) throw new Error('Empty')
+  const curMsg = msgs[msgs.length - 1];
+  if (!curMsg) throw new Error("Empty");
 
   const isRealUserMsg =
-    curMsg.role === 'user' &&
-    !(Array.isArray(curMsg.content) && curMsg.content.some((p: any) => p.type === 'tool_result'))
+    curMsg.role === "user" &&
+    !(Array.isArray(curMsg.content) && curMsg.content.some((p: any) => p.type === "tool_result"));
 
   if (isRealUserMsg && msgs.length >= 2) {
-    const prevMsg = msgs[msgs.length - 2]
-    if (prevMsg?.role === 'assistant') {
-      const lastHistEntry = history[history.length - 1]
-      const historyEndsWithUser = lastHistEntry?.userInputMessage
+    const prevMsg = msgs[msgs.length - 2];
+    if (prevMsg?.role === "assistant") {
+      const lastHistEntry = history[history.length - 1];
+      const historyEndsWithUser = lastHistEntry?.userInputMessage;
       if (historyEndsWithUser) {
-        let prevText = ''
+        let prevText = "";
         if (Array.isArray(prevMsg.content)) {
           for (const p of prevMsg.content) {
-            if (p.type === 'text') prevText += p.text || ''
+            if (p.type === "text") prevText += p.text || "";
           }
-        } else prevText = getContentText(prevMsg)
+        } else prevText = getContentText(prevMsg);
         if (prevText) {
-          history.push({ assistantResponseMessage: { content: prevText } })
+          history.push({ assistantResponseMessage: { content: prevText } });
         }
       }
     }
   }
 
-  history = injectSystemPrompt(history, sys, resolved)
-  let curContent = ''
-  const curTrs: any[] = []
-  const curImgs: any[] = []
+  history = injectSystemPrompt(history, sys, resolved);
+  let curContent = "";
+  const curTrs: any[] = [];
+  const curImgs: any[] = [];
 
-  if (curMsg.role === 'assistant') {
-    const arm: any = { content: '' }
-    let th = ''
+  if (curMsg.role === "assistant") {
+    const arm: any = { content: "" };
+    let th = "";
     if (Array.isArray(curMsg.content)) {
       for (const p of curMsg.content) {
-        if (p.type === 'text') arm.content += p.text || ''
-        else if (p.type === 'thinking') th += p.thinking || p.text || ''
-        else if (p.type === 'tool_use') {
-          if (!arm.toolUses) arm.toolUses = []
-          arm.toolUses.push({ input: p.input, name: p.name, toolUseId: p.id })
+        if (p.type === "text") arm.content += p.text || "";
+        else if (p.type === "thinking") th += p.thinking || p.text || "";
+        else if (p.type === "tool_use") {
+          if (!arm.toolUses) arm.toolUses = [];
+          arm.toolUses.push({ input: p.input, name: p.name, toolUseId: p.id });
         }
       }
-    } else arm.content = getContentText(curMsg)
+    } else arm.content = getContentText(curMsg);
     if ((curMsg as any).tool_calls && Array.isArray((curMsg as any).tool_calls)) {
-      if (!arm.toolUses) arm.toolUses = []
+      if (!arm.toolUses) arm.toolUses = [];
       for (const tc of (curMsg as any).tool_calls) {
         arm.toolUses.push({
           input:
-            typeof tc.function?.arguments === 'string'
+            typeof tc.function?.arguments === "string"
               ? JSON.parse(tc.function.arguments)
               : tc.function?.arguments,
           name: tc.function?.name,
-          toolUseId: tc.id
-        })
+          toolUseId: tc.id,
+        });
       }
     }
     if (th)
       arm.content = arm.content
         ? `<thinking>${th}</thinking>\n\n${arm.content}`
-        : `<thinking>${th}</thinking>`
+        : `<thinking>${th}</thinking>`;
 
     if (arm.content || arm.toolUses) {
-      history.push({ assistantResponseMessage: arm })
+      history.push({ assistantResponseMessage: arm });
     }
-    curContent = '[system: conversation continues]'
+    curContent = "[system: conversation continues]";
   } else {
-    const prev = history[history.length - 1]
+    const prev = history[history.length - 1];
     if (prev && !prev.assistantResponseMessage)
-      history.push({ assistantResponseMessage: { content: '[system: conversation continues]' } })
-    if (curMsg.role === 'tool') {
+      history.push({ assistantResponseMessage: { content: "[system: conversation continues]" } });
+    if (curMsg.role === "tool") {
       if (curMsg.tool_results) {
         for (const tr of curMsg.tool_results)
           curTrs.push({
             content: [{ text: getContentText(tr) }],
-            status: 'success',
-            toolUseId: tr.tool_call_id
-          })
+            status: "success",
+            toolUseId: tr.tool_call_id,
+          });
       } else {
         curTrs.push({
           content: [{ text: getContentText(curMsg) }],
-          status: 'success',
-          toolUseId: curMsg.tool_call_id
-        })
+          status: "success",
+          toolUseId: curMsg.tool_call_id,
+        });
       }
     } else if (Array.isArray(curMsg.content)) {
-      curContent = extractTextFromParts(curMsg.content)
+      curContent = extractTextFromParts(curMsg.content);
 
       for (const p of curMsg.content) {
-        if (p.type === 'tool_result') {
+        if (p.type === "tool_result") {
           curTrs.push({
             content: [{ text: getContentText(p.content || p) }],
-            status: 'success',
-            toolUseId: p.tool_use_id
-          })
+            status: "success",
+            toolUseId: p.tool_use_id,
+          });
         }
       }
 
-      const unifiedImages = extractAllImages(curMsg.content)
+      const unifiedImages = extractAllImages(curMsg.content);
       if (unifiedImages.length > 0) {
-        const { images, omitted } = convertImagesToKiroFormat(unifiedImages)
-        curImgs.push(...images)
+        const { images, omitted } = convertImagesToKiroFormat(unifiedImages);
+        curImgs.push(...images);
         if (omitted > 0) {
-          curContent += `\n\n[${omitted} image(s) omitted due to API limits]`
+          curContent += `\n\n[${omitted} image(s) omitted due to API limits]`;
         }
       }
-    } else curContent = getContentText(curMsg)
+    } else curContent = getContentText(curMsg);
     if (!curContent)
-      curContent = curTrs.length ? 'Tool results provided.' : '[system: conversation continues]'
+      curContent = curTrs.length ? "Tool results provided." : "[system: conversation continues]";
   }
   const request: any = {
     conversationState: {
@@ -187,92 +185,92 @@ function buildCodeWhispererRequest(
         userInputMessage: {
           content: curContent,
           modelId: resolved,
-          origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR
-        }
-      }
-    }
-  }
-  if (auth.profileArn) request.profileArn = auth.profileArn
-  const toolUsesInHistory = history.flatMap((h) => h.assistantResponseMessage?.toolUses || [])
-  const allToolUseIdsInHistory = new Set(toolUsesInHistory.map((tu) => tu.toolUseId))
-  const finalCurTrs: any[] = []
-  const orphanedTrs: any[] = []
+          origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR,
+        },
+      },
+    },
+  };
+  if (auth.profileArn) request.profileArn = auth.profileArn;
+  const toolUsesInHistory = history.flatMap((h) => h.assistantResponseMessage?.toolUses || []);
+  const allToolUseIdsInHistory = new Set(toolUsesInHistory.map((tu) => tu.toolUseId));
+  const finalCurTrs: any[] = [];
+  const orphanedTrs: any[] = [];
   for (const tr of curTrs) {
-    if (allToolUseIdsInHistory.has(tr.toolUseId)) finalCurTrs.push(tr)
+    if (allToolUseIdsInHistory.has(tr.toolUseId)) finalCurTrs.push(tr);
     else {
-      const originalCall = findOriginalToolCall(messages, tr.toolUseId)
+      const originalCall = findOriginalToolCall(messages, tr.toolUseId);
       if (originalCall) {
         orphanedTrs.push({
           call: {
-            name: originalCall.name || originalCall.function?.name || 'tool',
+            name: originalCall.name || originalCall.function?.name || "tool",
             toolUseId: tr.toolUseId,
             input:
               originalCall.input ||
-              (originalCall.function?.arguments ? JSON.parse(originalCall.function.arguments) : {})
+              (originalCall.function?.arguments ? JSON.parse(originalCall.function.arguments) : {}),
           },
-          result: tr
-        })
+          result: tr,
+        });
       } else {
-        curContent += `\n\n[Output for tool call ${tr.toolUseId}]:\n${tr.content?.[0]?.text || ''}`
+        curContent += `\n\n[Output for tool call ${tr.toolUseId}]:\n${tr.content?.[0]?.text || ""}`;
       }
     }
   }
   if (orphanedTrs.length > 0) {
-    const prev = history[history.length - 1]
+    const prev = history[history.length - 1];
     if (!prev || prev.assistantResponseMessage) {
       history.push({
         userInputMessage: {
-          content: 'Running tools...',
+          content: "Running tools...",
           modelId: resolved,
-          origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR
-        }
-      })
+          origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR,
+        },
+      });
     }
     history.push({
       assistantResponseMessage: {
-        content: 'I will execute the following tools.',
-        toolUses: orphanedTrs.map((o) => o.call)
-      }
-    })
-    finalCurTrs.push(...orphanedTrs.map((o) => o.result))
+        content: "I will execute the following tools.",
+        toolUses: orphanedTrs.map((o) => o.call),
+      },
+    });
+    finalCurTrs.push(...orphanedTrs.map((o) => o.result));
   }
-  if (history.length > 0) request.conversationState.history = history
+  if (history.length > 0) request.conversationState.history = history;
 
-  const uim = request.conversationState.currentMessage.userInputMessage
+  const uim = request.conversationState.currentMessage.userInputMessage;
   if (uim) {
-    uim.content = curContent
-    if (curImgs.length) uim.images = curImgs
-    const ctx: any = {}
-    if (finalCurTrs.length) ctx.toolResults = deduplicateToolResults(finalCurTrs)
-    if (cwTools.length) ctx.tools = cwTools
-    if (Object.keys(ctx).length) uim.userInputMessageContext = ctx
-    const hasToolsInHistory = historyHasToolCalling(history)
+    uim.content = curContent;
+    if (curImgs.length) uim.images = curImgs;
+    const ctx: any = {};
+    if (finalCurTrs.length) ctx.toolResults = deduplicateToolResults(finalCurTrs);
+    if (cwTools.length) ctx.tools = cwTools;
+    if (Object.keys(ctx).length) uim.userInputMessageContext = ctx;
+    const hasToolsInHistory = historyHasToolCalling(history);
     if (hasToolsInHistory) {
-      const toolNamesInHistory = extractToolNamesFromHistory(history)
+      const toolNamesInHistory = extractToolNamesFromHistory(history);
       if (toolNamesInHistory.size > 0) {
-        const existingTools = uim.userInputMessageContext?.tools || []
+        const existingTools = uim.userInputMessageContext?.tools || [];
         const existingToolNames = new Set(
-          existingTools.map((t: any) => t.toolSpecification?.name).filter(Boolean)
-        )
+          existingTools.map((t: any) => t.toolSpecification?.name).filter(Boolean),
+        );
         const missingToolNames = Array.from(toolNamesInHistory).filter(
-          (name) => !existingToolNames.has(name)
-        )
+          (name) => !existingToolNames.has(name),
+        );
         if (missingToolNames.length > 0) {
           const placeholderTools = missingToolNames.map((name) => ({
             toolSpecification: {
               name,
-              description: 'Tool',
-              inputSchema: { json: { type: 'object', properties: {} } }
-            }
-          }))
-          if (!uim.userInputMessageContext) uim.userInputMessageContext = {}
-          uim.userInputMessageContext.tools = [...existingTools, ...placeholderTools]
+              description: "Tool",
+              inputSchema: { json: { type: "object", properties: {} } },
+            },
+          }));
+          if (!uim.userInputMessageContext) uim.userInputMessageContext = {};
+          uim.userInputMessageContext.tools = [...existingTools, ...placeholderTools];
         }
       }
     }
   }
 
-  return { request, resolved, convId }
+  return { request, resolved, convId };
 }
 
 export function transformToSdkRequest(
@@ -281,23 +279,21 @@ export function transformToSdkRequest(
   auth: KiroAuthDetails,
   think = false,
   budget = 20000,
-  showToast?: ToastFunction
 ): any {
-  const enableThinking = think || model.endsWith('-thinking')
+  const enableThinking = think || model.endsWith("-thinking");
   const { request, resolved, convId } = buildCodeWhispererRequest(
     body,
     model,
     auth,
     enableThinking,
     budget,
-    showToast
-  )
+  );
   return {
     conversationState: request.conversationState,
     profileArn: request.profileArn,
     streaming: true,
     effectiveModel: resolved,
     conversationId: convId,
-    region: extractRegionFromArn(auth.profileArn) || auth.idcRegion
-  }
+    region: extractRegionFromArn(auth.profileArn) || auth.idcRegion,
+  };
 }

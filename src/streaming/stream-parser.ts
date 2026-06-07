@@ -1,26 +1,26 @@
 export function findRealTag(buffer: string, tag: string): number {
-  const codeBlockPattern = /```[\s\S]*?```/g
-  const codeBlocks: Array<[number, number]> = []
+  const codeBlockPattern = /```[\s\S]*?```/g;
+  const codeBlocks: Array<[number, number]> = [];
 
-  let match: RegExpExecArray | null
+  let match: RegExpExecArray | null;
   while ((match = codeBlockPattern.exec(buffer)) !== null) {
-    codeBlocks.push([match.index, match.index + match[0].length])
+    codeBlocks.push([match.index, match.index + match[0].length]);
   }
 
-  let pos = 0
+  let pos = 0;
   while ((pos = buffer.indexOf(tag, pos)) !== -1) {
-    let inCodeBlock = false
+    let inCodeBlock = false;
     for (const [start, end] of codeBlocks) {
       if (pos >= start && pos < end) {
-        inCodeBlock = true
-        break
+        inCodeBlock = true;
+        break;
       }
     }
     if (!inCodeBlock) {
-      return pos
+      return pos;
     }
-    pos += tag.length
+    pos += tag.length;
   }
 
-  return -1
+  return -1;
 }
