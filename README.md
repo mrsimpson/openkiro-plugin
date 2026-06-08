@@ -15,7 +15,7 @@ Add to your `~/.config/opencode/opencode.json`:
 {
   "plugin": {
     "kiro": {
-      "source": "/path/to/openkiro-plugin"
+      "source": "/path/to/openkiro-plugin/src/index.ts"
     }
   }
 }
@@ -37,7 +37,7 @@ The model list is a static mapping in `src/constants.ts` (`MODEL_MAPPING`). The 
 
 ### Authentication
 
-The plugin reads credentials directly from the Kiro CLI's SQLite database (`~/Library/Application Support/kiro-cli/data.sqlite3` on macOS). No separate OAuth flow or configuration is needed.
+The plugin reads credentials directly from the Kiro CLI's SQLite database (`~/Library/Application Support/kiro-cli/data.sqlite3` on macOS) using `bun:sqlite` (OpenCode runs on Bun). No separate OAuth flow or configuration is needed.
 
 On every request, the plugin:
 

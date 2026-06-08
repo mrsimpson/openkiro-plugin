@@ -1,7 +1,7 @@
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
 
 export interface KiroCliAuth {
   accessToken: string;
@@ -29,22 +29,18 @@ function getCliDbPath(): string {
   return path.join(os.homedir(), ".local", "share", "kiro-cli", "data.sqlite3");
 }
 
-function openDb(dbPath: string): Database {
-  return new Database(dbPath, { readonly: true });
-}
-
-function queryState(db: any, key: string): string | undefined {
+function queryState(db: Database, key: string): string | undefined {
   try {
-    const row = db.prepare("SELECT value FROM state WHERE key = ?").get(key) as any;
+    const row = db.query("SELECT value FROM state WHERE key = ?").get(key) as any;
     return row?.value ?? undefined;
   } catch {
     return undefined;
   }
 }
 
-function queryAuthKv(db: any, key: string): string | undefined {
+function queryAuthKv(db: Database, key: string): string | undefined {
   try {
-    const row = db.prepare("SELECT value FROM auth_kv WHERE key = ?").get(key) as any;
+    const row = db.query("SELECT value FROM auth_kv WHERE key = ?").get(key) as any;
     return row?.value ?? undefined;
   } catch {
     return undefined;
@@ -55,10 +51,9 @@ export function readKiroCliAuth(): KiroCliAuth | null {
   const dbPath = getCliDbPath();
   if (!fs.existsSync(dbPath)) return null;
 
-  const db = openDb(dbPath);
+  const db = new Database(dbPath, { readonly: true });
 
   try {
-    // Read token — prefer kirocli token, fall back to codewhisperer token
     const tokenRaw =
       queryAuthKv(db, "kirocli:odic:token") || queryAuthKv(db, "codewhisperer:odic:token");
     if (!tokenRaw) return null;
@@ -68,7 +63,6 @@ export function readKiroCliAuth(): KiroCliAuth | null {
     const refreshToken = token.refresh_token || token.refreshToken;
     if (!accessToken || !refreshToken) return null;
 
-    // Read client registration for clientId/clientSecret
     const regRaw =
       queryAuthKv(db, "kirocli:odic:device-registration") ||
       queryAuthKv(db, "codewhisperer:odic:device-registration");
@@ -79,7 +73,6 @@ export function readKiroCliAuth(): KiroCliAuth | null {
     const clientSecret = reg.client_secret || reg.clientSecret;
     if (!clientId || !clientSecret) return null;
 
-    // Parse expiry
     let expiresAt: number;
     if (token.expires_at) {
       expiresAt = new Date(token.expires_at).getTime();
@@ -92,7 +85,6 @@ export function readKiroCliAuth(): KiroCliAuth | null {
     const region = token.region || reg.region || "us-east-1";
     const startUrl = token.start_url || reg.start_url || "";
 
-    // Read profile ARN from state
     let profileArn: string | undefined;
     const profileRaw = queryState(db, "api.codewhisperer.profile");
     if (profileRaw) {
@@ -115,8 +107,6 @@ export function readKiroCliAuth(): KiroCliAuth | null {
   } catch {
     return null;
   } finally {
-    try {
-      db.close();
-    } catch {}
+    db.close();
   }
 }
