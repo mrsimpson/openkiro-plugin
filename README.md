@@ -13,11 +13,7 @@ Add to your `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "plugin": {
-    "kiro": {
-      "source": "/path/to/openkiro-plugin/src/index.ts"
-    }
-  }
+  "plugin": ["/path/to/openkiro-plugin"]
 }
 ```
 
@@ -25,13 +21,36 @@ Then `/connect` in OpenCode and select the Kiro option.
 
 ## Available models
 
-- `auto` — server-side model selection
-- `claude-sonnet-4-6`, `claude-opus-4-7`, and other Claude variants
-- `deepseek-3.2`, `glm-5`, `minimax-m2.5`, `qwen3-coder-next`
+By default, the plugin exposes these models: `auto`, `claude-opus-4-6`, `claude-opus-4-6-thinking`, `claude-sonnet-4-6`, `claude-sonnet-4-6-thinking`, `claude-haiku-4-5`, `minimax-m2.5`, `minimax-m2.1`, `qwen3-coder-next`.
+
+To expose additional models, define them in your `opencode.json` under `provider.kiro.models`. This **replaces** the defaults entirely — include any default models you still want:
+
+```json
+{
+  "plugin": ["/path/to/openkiro-plugin"],
+  "provider": {
+    "kiro": {
+      "models": {
+        "auto": { "name": "Auto (1.0x)", "limit": { "context": 200000, "output": 64000 }, "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] } },
+        "claude-sonnet-4-6": { "name": "Claude Sonnet 4.6", "limit": { "context": 1000000, "output": 64000 }, "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] } },
+        "claude-opus-4-7": { "name": "Claude Opus 4.7", "limit": { "context": 1000000, "output": 64000 }, "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] } },
+        "deepseek-3.2": { "name": "DeepSeek 3.2", "limit": { "context": 200000, "output": 64000 }, "modalities": { "input": ["text"], "output": ["text"] } }
+      }
+    }
+  }
+}
+```
 
 Append `-thinking` to any Claude model for extended thinking mode (e.g. `claude-sonnet-4-6-thinking`).
 
-The model list is a static mapping in `src/constants.ts` (`MODEL_MAPPING`). The CodeWhisperer SDK has no model-discovery endpoint, so available models are maintained manually. When AWS adds new models to the Kiro backend, add a new entry there — the key is what users type in OpenCode, the value is what the API expects (typically hyphens → dots for Claude models).
+### How model IDs relate to the API
+
+The model IDs you use in `opencode.json` (and that appear in `/models`) are **user-facing keys**. Before sending a request to the CodeWhisperer API, the plugin translates them via `MODEL_MAPPING` in `src/constants.ts` — typically converting hyphens to dots for Claude models (e.g. `claude-sonnet-4-6` → `claude-sonnet-4.6`). Any model ID not found in the mapping is passed through unchanged.
+
+The CodeWhisperer SDK has no model-discovery endpoint, so both layers are maintained manually. To add a new model:
+
+1. Add the user-facing entry to your `opencode.json` (so it shows up in `/models`)
+2. If the API name differs from the user-facing ID, add a translation in `src/constants.ts` `MODEL_MAPPING`
 
 ## How it works
 
