@@ -9,6 +9,7 @@ import { transformSdkStream } from "./streaming/sdk-stream-transformer.js";
 import { extractRegionFromArn } from "./constants.js";
 import type { KiroAuthDetails } from "./types.js";
 import { readKiroCliAuth, type KiroCliAuth } from "./kiro-cli-db.js";
+import { listKiroModels, modelIdToKey, type KiroModel } from "./kiro-cli-models.js";
 
 const PLUGIN_ID = "kiro";
 
@@ -51,6 +52,59 @@ function getApiRegionOverride(): string | undefined {
   return undefined;
 }
 
+/**
+ * Derives a human-readable display name from a model id and credit multiplier.
+ * e.g. "claude-sonnet-4.6", 1.3 → "Claude Sonnet 4.6 (1.3x)"
+ */
+function formatModelName(id: string, credits: number): string {
+  // Capitalise hyphen-separated words, keep version numbers intact
+  const words = id
+    .split("-")
+    .map((w) => (w.match(/^\d/) ? w : w.charAt(0).toUpperCase() + w.slice(1)));
+  return `${words.join(" ")} (${credits}x)`;
+}
+
+/**
+ * Returns true for model ids that are likely to support vision (images/PDFs).
+ * GPT and Claude models do; small open-weight models generally don't.
+ */
+function supportsVision(id: string): boolean {
+  return id.startsWith("claude-") || id.startsWith("gpt-");
+}
+
+/**
+ * Builds the opencode model config object from the live kiro-cli model list.
+ */
+function buildModelConfig(models: KiroModel[]): Record<string, any> {
+  const config: Record<string, any> = {};
+
+  for (const model of models) {
+    const key = modelIdToKey(model.id);
+    const isClaude = model.id.startsWith("claude-");
+    const isAuto = model.id === "auto";
+    const contextLimit = isAuto ? 200_000 : 1_000_000;
+    const modalities: Record<string, string[]> = {
+      input: supportsVision(model.id) ? ["text", "image", "pdf"] : ["text"],
+      output: ["text"],
+    };
+
+    config[key] = {
+      name: formatModelName(model.id, model.credits),
+      limit: { context: contextLimit, output: 64_000 },
+      ...(isAuto || supportsVision(model.id) ? { modalities } : {}),
+      ...(isClaude ? {
+        variants: {
+          low:    { thinkingConfig: { thinkingBudget: 8_192 } },
+          medium: { thinkingConfig: { thinkingBudget: 16_384 } },
+          high:   { thinkingConfig: { thinkingBudget: 32_768 } },
+        },
+      } : {}),
+    };
+  }
+
+  return config;
+}
+
 const KiroPlugin = async (_input: any) => {
   const regionOverride = getApiRegionOverride();
 
@@ -72,60 +126,7 @@ const KiroPlugin = async (_input: any) => {
       input.provider[PLUGIN_ID].npm = "@ai-sdk/openai-compatible";
       input.provider[PLUGIN_ID].api = baseURL;
       if (!input.provider[PLUGIN_ID].models) {
-        input.provider[PLUGIN_ID].models = {
-          auto: {
-            name: "Auto (1.0x)",
-            limit: { context: 200000, output: 64000 },
-            modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-          },
-          "claude-opus-4-6": {
-            name: "Claude Opus 4.6",
-            limit: { context: 1000000, output: 64000 },
-            modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-          },
-          "claude-opus-4-6-thinking": {
-            name: "Claude Opus 4.6 Thinking",
-            limit: { context: 1000000, output: 64000 },
-            modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-            variants: {
-              low: { thinkingConfig: { thinkingBudget: 8192 } },
-              medium: { thinkingConfig: { thinkingBudget: 16384 } },
-              max: { thinkingConfig: { thinkingBudget: 32768 } },
-            },
-          },
-          "claude-sonnet-4-6": {
-            name: "Claude Sonnet 4.6",
-            limit: { context: 1000000, output: 64000 },
-            modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-          },
-          "claude-sonnet-4-6-thinking": {
-            name: "Claude Sonnet 4.6 Thinking",
-            limit: { context: 1000000, output: 64000 },
-            modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-            variants: {
-              low: { thinkingConfig: { thinkingBudget: 8192 } },
-              medium: { thinkingConfig: { thinkingBudget: 16384 } },
-              max: { thinkingConfig: { thinkingBudget: 32768 } },
-            },
-          },
-          "claude-haiku-4-5": {
-            name: "Claude Haiku 4.5",
-            limit: { context: 200000, output: 64000 },
-            modalities: { input: ["text", "image"], output: ["text"] },
-          },
-          "minimax-m2.5": {
-            name: "MiniMax 2.5 (0.25x)",
-            limit: { context: 200000, output: 64000 },
-          },
-          "minimax-m2.1": {
-            name: "MiniMax 2.1 (0.15x)",
-            limit: { context: 200000, output: 64000 },
-          },
-          "qwen3-coder-next": {
-            name: "Qwen3 Coder Next (0.05x)",
-            limit: { context: 256000, output: 64000 },
-          },
-        };
+        input.provider[PLUGIN_ID].models = buildModelConfig(listKiroModels());
       }
     },
 

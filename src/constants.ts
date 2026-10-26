@@ -9,38 +9,9 @@ export const KIRO_CONSTANTS = {
   ORIGIN_AI_EDITOR: "AI_EDITOR",
 };
 
-export const MODEL_MAPPING: Record<string, string> = {
-  // Claude Haiku
-  "claude-haiku-4-5": "claude-haiku-4.5",
-  "claude-haiku-4-5-thinking": "claude-haiku-4.5",
-  // Claude Sonnet
-  "claude-sonnet-4": "claude-sonnet-4",
-  "claude-sonnet-4-5": "claude-sonnet-4.5",
-  "claude-sonnet-4-5-thinking": "claude-sonnet-4.5",
-  "claude-sonnet-4-5-1m": "claude-sonnet-4.5-1m",
-  "claude-sonnet-4-5-1m-thinking": "claude-sonnet-4.5-1m",
-  "claude-sonnet-4-6": "claude-sonnet-4.6",
-  "claude-sonnet-4-6-thinking": "claude-sonnet-4.6",
-  "claude-sonnet-4-6-1m": "claude-sonnet-4.6-1m",
-  "claude-sonnet-4-6-1m-thinking": "claude-sonnet-4.6-1m",
-  // Claude Opus
-  "claude-opus-4-5": "claude-opus-4.5",
-  "claude-opus-4-5-thinking": "claude-opus-4.5",
-  "claude-opus-4-6": "claude-opus-4.6",
-  "claude-opus-4-6-thinking": "claude-opus-4.6",
-  "claude-opus-4-6-1m": "claude-opus-4.6-1m",
-  "claude-opus-4-6-1m-thinking": "claude-opus-4.6-1m",
-  "claude-opus-4-7": "claude-opus-4.7",
-  "claude-opus-4-7-thinking": "claude-opus-4.7",
-  // Auto — resolved server-side
-  auto: "auto",
-  // Open weight models
-  "deepseek-3.2": "deepseek-3.2",
-  "glm-5": "glm-5",
-  "minimax-m2.5": "minimax-m2.5",
-  "minimax-m2.1": "minimax-m2.1",
-  "qwen3-coder-next": "qwen3-coder-next",
-};
+import { buildModelMapping, listKiroModels } from "./kiro-cli-models.js";
+
+export const MODEL_MAPPING: Record<string, string> = buildModelMapping(listKiroModels());
 
 export function extractRegionFromArn(arn: string | undefined): string | undefined {
   if (!arn) return undefined;
