@@ -16,12 +16,21 @@ export function createSdkClient(
   }
 
   const token = auth.access!;
+  const ver = KIRO_CONSTANTS.KIRO_CLI_VERSION;
   const client = new CodeWhispererStreamingClient({
     region,
     endpoint: `https://q.${region}.amazonaws.com`,
     token: () => Promise.resolve({ token }),
     maxAttempts: 1,
-    customUserAgent: [[KIRO_CONSTANTS.USER_AGENT]],
+    // Match the exact format the kiro KAS bundle constructs:
+    // "KiroCLI/{ver} KAS/{ver} os/{platform} md/appVersion-{ver}"
+    // The API version-check specifically looks for "md/appVersion-{ver}".
+    customUserAgent: [
+      [`KiroCLI/${ver}`],
+      [`KAS/${ver}`],
+      [`os/${process.platform}`],
+      [`md/appVersion-${ver}`],
+    ],
   });
 
   client.middlewareStack.add(

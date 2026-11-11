@@ -97,16 +97,31 @@ The plugin intercepts the `fetch` call that OpenCode's AI SDK would normally mak
 
 Retries up to 3 times on 429 (rate limit) and 5xx errors with exponential backoff (1s, 2s, 4s).
 
+### Client version / User-Agent
+
+The CodeWhisperer API enforces a client-version check and rejects requests whose
+`user-agent` lacks a recognised version token with a 403 `AccessDeniedException`
+("This version of Kiro is no longer supported"). The plugin therefore sends a
+versioned user-agent matching the format the Kiro KAS bundle uses
+(`KiroCLI/<ver> KAS/<ver> os/<platform> md/appVersion-<ver>`); the server's
+version check specifically looks for the `md/appVersion-<ver>` token. The same
+user-agent is also sent on the OIDC token-refresh call. The version is read
+dynamically from the installed Kiro CLI (`kiro-cli --version` via
+`getKiroCliVersion` in `src/kiro-cli-models.ts`) so it stays current as AWS
+deprecates older client versions; if the CLI cannot be reached, a sensible
+fallback version (`FALLBACK_KIRO_VERSION`) is used.
+
 ## Project structure
 
 ```
 src/
 ├── index.ts              Plugin entry — hooks into OpenCode's config/auth/provider system
 ├── kiro-cli-db.ts        Reads auth from Kiro CLI's SQLite DB
+├── kiro-cli-models.ts    Reads the model list and version from the Kiro CLI
 ├── token.ts              OIDC token refresh
 ├── sdk-client.ts         CodeWhisperer streaming client (cached per region+token)
 ├── request.ts            Transforms OpenAI messages → CodeWhisperer conversationState
-├── constants.ts          Model mapping, API constants
+├── constants.ts          Model mapping, API constants, resolved Kiro CLI version
 ├── types.ts              Shared type definitions
 ├── image-handler.ts      Converts images to Kiro's format
 ├── streaming/            SDK response → OpenAI SSE stream

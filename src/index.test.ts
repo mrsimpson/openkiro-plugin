@@ -90,14 +90,14 @@ describe("plugin entry (index.ts)", () => {
     });
   });
 
-  describe("customFetch in loader", () => {
+  describe("createKiroFetch", () => {
     it("should contain retry logic", () => {
       const fs = require("fs");
       const source = fs.readFileSync(require("path").resolve(__dirname, "./index.ts"), "utf-8");
 
       const customFetchBody = source.slice(
-        source.indexOf("const customFetch"),
-        source.indexOf("return { apiKey"),
+        source.indexOf("function createKiroFetch"),
+        source.indexOf("async function startKiroProxy"),
       );
 
       expect(customFetchBody).toMatch(/maxAttempts/);
@@ -109,8 +109,8 @@ describe("plugin entry (index.ts)", () => {
       const source = fs.readFileSync(require("path").resolve(__dirname, "./index.ts"), "utf-8");
 
       const customFetchBody = source.slice(
-        source.indexOf("const customFetch"),
-        source.indexOf("return { apiKey"),
+        source.indexOf("function createKiroFetch"),
+        source.indexOf("async function startKiroProxy"),
       );
 
       expect(customFetchBody).toContain("readKiroCliAuth");
@@ -129,8 +129,8 @@ describe("plugin entry (index.ts)", () => {
       const source = fs.readFileSync(require("path").resolve(__dirname, "./index.ts"), "utf-8");
 
       const customFetchBody = source.slice(
-        source.indexOf("const customFetch"),
-        source.indexOf("return { apiKey"),
+        source.indexOf("function createKiroFetch"),
+        source.indexOf("async function startKiroProxy"),
       );
 
       expect(customFetchBody).toContain("providerOptions");
