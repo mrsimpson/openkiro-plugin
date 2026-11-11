@@ -1,5 +1,29 @@
 import { execSync } from "child_process";
 
+/**
+ * Fallback version used when the installed Kiro CLI version cannot be read.
+ * Kept reasonably current so the server's client-version check still passes.
+ */
+export const FALLBACK_KIRO_VERSION = "2.21.4";
+
+/**
+ * Returns the installed kiro-cli version string (e.g. "2.21.4").
+ * Falls back to FALLBACK_KIRO_VERSION if the CLI is unavailable.
+ */
+export function getKiroCliVersion(): string {
+  try {
+    const output = execSync("kiro-cli --version", {
+      encoding: "utf-8",
+      timeout: 5_000,
+    });
+    // Output is "kiro-cli 2.21.4\n" — extract the version number
+    const m = output.trim().match(/(\d+\.\d+\.\d+)/);
+    return m ? m[1] : FALLBACK_KIRO_VERSION;
+  } catch {
+    return FALLBACK_KIRO_VERSION;
+  }
+}
+
 export interface KiroModel {
   id: string;         // as returned by CLI, e.g. "claude-sonnet-4.6"
   credits: number;    // multiplier, e.g. 1.3

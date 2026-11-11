@@ -1,6 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import * as http from "http";
+import type { AddressInfo } from "net";
+import { Model, Plugin, Provider } from "@opencode/plugin";
 import { refreshAccessToken, KiroTokenRefreshError } from "./token.js";
 import { transformToSdkRequest } from "./request.js";
 import { createSdkClient } from "./sdk-client.js";
@@ -105,13 +108,208 @@ function buildModelConfig(models: KiroModel[]): Record<string, any> {
   return config;
 }
 
-const KiroPlugin = async (_input: any) => {
-  const regionOverride = getApiRegionOverride();
+/**
+ * Returns a fetch implementation that translates OpenAI-compatible chat requests
+ * into Kiro SDK calls and streams the result back as SSE.
+ */
+function createKiroFetch(
+  cliAuth: KiroCliAuth,
+  apiRegion: string,
+  token: { accessToken: string; expiresAt: number },
+): typeof fetch {
+  let { accessToken, expiresAt } = token;
 
-  function resolveApiRegion(cliAuth: KiroCliAuth): string {
-    if (regionOverride) return regionOverride;
-    return extractRegionFromArn(cliAuth.profileArn) || cliAuth.region || "us-east-1";
-  }
+  return async (resource, init) => {
+    const url = typeof resource === "string" ? resource : (resource as any).url;
+    if (!/q\..*\.amazonaws\.com/.test(url)) {
+      return globalThis.fetch(resource, init);
+    }
+
+    // Re-read from DB on each request to pick up token rotations from Kiro CLI
+    const freshAuth = readKiroCliAuth();
+    if (freshAuth) {
+      accessToken = freshAuth.accessToken;
+      expiresAt = freshAuth.expiresAt;
+    }
+
+    if (Date.now() >= expiresAt - 120_000) {
+      const src = freshAuth || cliAuth;
+      try {
+        const refreshed = await refreshAccessToken(
+          src.refreshToken,
+          src.clientId,
+          src.clientSecret,
+          src.region,
+        );
+        accessToken = refreshed.accessToken;
+        expiresAt = refreshed.expiresAt;
+      } catch (e) {
+        throw new KiroTokenRefreshError(
+          `Token refresh failed: ${e instanceof Error ? e.message : "Unknown error"}`,
+          "REFRESH_FAILED",
+        );
+      }
+    }
+
+    const body = init?.body
+      ? typeof init.body === "string"
+        ? JSON.parse(init.body)
+        : init.body
+      : {};
+    const model = body.model || "claude-sonnet-4-6";
+
+    const thinkingConfig = body.providerOptions?.thinkingConfig ?? body.thinkingConfig;
+    const think = !!thinkingConfig;
+    const budget = thinkingConfig?.thinkingBudget || 20000;
+
+    const sdkRequest = transformToSdkRequest(
+      body,
+      model,
+      {
+        idcRegion: cliAuth.region,
+        profileArn: cliAuth.profileArn,
+      } as KiroAuthDetails,
+      think,
+      budget,
+    );
+
+    const effectiveRegion = sdkRequest.region || apiRegion;
+    const sdkClient = createSdkClient({ access: accessToken } as KiroAuthDetails, effectiveRegion);
+
+    const maxAttempts = 3;
+    let lastError: any = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const command = new GenerateAssistantResponseCommand({
+          conversationState: sdkRequest.conversationState,
+          profileArn: sdkRequest.profileArn,
+        });
+        const sdkResponse = await sdkClient.send(command);
+        const stream = transformSdkStream(sdkResponse, model, sdkRequest.conversationId);
+
+        const encoder = new TextEncoder();
+        const readable = new ReadableStream({
+          async start(controller) {
+            try {
+              for await (const chunk of stream) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+              }
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              controller.close();
+            } catch (e) {
+              controller.error(e);
+            }
+          },
+        });
+
+        return new Response(readable, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          },
+        });
+      } catch (e: any) {
+        lastError = e;
+        const status = e?.statusCode || e?.$metadata?.httpStatusCode || 0;
+        const isRetryable = status === 429 || (status >= 500 && status < 600);
+
+        if (!isRetryable || attempt >= maxAttempts) throw e;
+
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    throw lastError;
+  };
+}
+
+/**
+ * V2 providers cannot inject a custom fetch, so the Kiro translation runs behind
+ * a loopback HTTP server that the openai-compatible provider talks to.
+ */
+async function startKiroProxy(
+  resolveApiRegion: (cliAuth: KiroCliAuth) => string,
+): Promise<{ baseURL: string; close: () => Promise<void> }> {
+  const server = http.createServer(async (req, res) => {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+
+      const cliAuth = readKiroCliAuth();
+      if (!cliAuth) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message: 'Kiro CLI is not authenticated. Run "kiro login" first.' } }));
+        return;
+      }
+
+      const apiRegion = resolveApiRegion(cliAuth);
+      const kiroFetch = createKiroFetch(cliAuth, apiRegion, cliAuth);
+      const response = await kiroFetch(`https://q.${apiRegion}.amazonaws.com${req.url ?? ""}`, {
+        method: "POST",
+        body: Buffer.concat(chunks).toString("utf-8"),
+      });
+
+      res.writeHead(response.status, Object.fromEntries(response.headers));
+      if (!response.body) {
+        res.end();
+        return;
+      }
+      const reader = response.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      res.end();
+    } catch (e: any) {
+      const status = e?.statusCode || e?.$metadata?.httpStatusCode || 500;
+      if (!res.headersSent) res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : String(e) } }));
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+
+  return {
+    baseURL: `http://127.0.0.1:${port}`,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+function buildV2Models(models: KiroModel[]): Model.Info[] {
+  const providerID = Provider.ID.make(PLUGIN_ID);
+  return Object.entries(buildModelConfig(models)).map(([key, config]) => {
+    const id = Model.ID.make(key);
+    const base = Model.Info.default(providerID, id);
+    return {
+      ...base,
+      name: config.name,
+      limit: { context: config.limit.context, output: config.limit.output },
+      capabilities: {
+        ...base.capabilities,
+        input: config.modalities?.input ?? ["text"],
+        output: config.modalities?.output ?? ["text"],
+      },
+      variants: Object.entries(config.variants ?? {}).map(([variantID, body]) => ({
+        id: Model.VariantID.make(variantID),
+        body: body as Record<string, unknown>,
+      })),
+    } as Model.Info;
+  });
+}
+
+function resolveApiRegionWith(regionOverride: string | undefined) {
+  return (cliAuth: KiroCliAuth): string =>
+    regionOverride || extractRegionFromArn(cliAuth.profileArn) || cliAuth.region || "us-east-1";
+}
+
+const KiroPlugin = async (_input: any) => {
+  const resolveApiRegion = resolveApiRegionWith(getApiRegionOverride());
 
   return {
     config: async (input: any) => {
@@ -157,114 +355,7 @@ const KiroPlugin = async (_input: any) => {
           }
         }
 
-        const customFetch: typeof fetch = async (resource, init) => {
-          const url = typeof resource === "string" ? resource : (resource as any).url;
-          if (!/q\..*\.amazonaws\.com/.test(url)) {
-            return globalThis.fetch(resource, init);
-          }
-
-          // Re-read from DB on each request to pick up token rotations from Kiro CLI
-          const freshAuth = readKiroCliAuth();
-          if (freshAuth) {
-            accessToken = freshAuth.accessToken;
-            expiresAt = freshAuth.expiresAt;
-          }
-
-          if (Date.now() >= expiresAt - 120_000) {
-            const src = freshAuth || cliAuth;
-            try {
-              const refreshed = await refreshAccessToken(
-                src.refreshToken,
-                src.clientId,
-                src.clientSecret,
-                src.region,
-              );
-              accessToken = refreshed.accessToken;
-              expiresAt = refreshed.expiresAt;
-            } catch (e) {
-              throw new KiroTokenRefreshError(
-                `Token refresh failed: ${e instanceof Error ? e.message : "Unknown error"}`,
-                "REFRESH_FAILED",
-              );
-            }
-          }
-
-          const body = init?.body
-            ? typeof init.body === "string"
-              ? JSON.parse(init.body)
-              : init.body
-            : {};
-          const model = body.model || "claude-sonnet-4-6";
-
-          const think = !!body.providerOptions?.thinkingConfig;
-          const budget = body.providerOptions?.thinkingConfig?.thinkingBudget || 20000;
-
-          const sdkRequest = transformToSdkRequest(
-            body,
-            model,
-            {
-              idcRegion: cliAuth.region,
-              profileArn: cliAuth.profileArn,
-            } as KiroAuthDetails,
-            think,
-            budget,
-          );
-
-          const effectiveRegion = sdkRequest.region || apiRegion;
-          const sdkClient = createSdkClient(
-            { access: accessToken } as KiroAuthDetails,
-            effectiveRegion,
-          );
-
-          const maxAttempts = 3;
-          let lastError: any = null;
-
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-              const command = new GenerateAssistantResponseCommand({
-                conversationState: sdkRequest.conversationState,
-                profileArn: sdkRequest.profileArn,
-              });
-              const sdkResponse = await sdkClient.send(command);
-              const stream = transformSdkStream(sdkResponse, model, sdkRequest.conversationId);
-
-              const encoder = new TextEncoder();
-              const readable = new ReadableStream({
-                async start(controller) {
-                  try {
-                    for await (const chunk of stream) {
-                      controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
-                    }
-                    controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-                    controller.close();
-                  } catch (e) {
-                    controller.error(e);
-                  }
-                },
-              });
-
-              return new Response(readable, {
-                status: 200,
-                headers: {
-                  "Content-Type": "text/event-stream",
-                  "Cache-Control": "no-cache",
-                  Connection: "keep-alive",
-                },
-              });
-            } catch (e: any) {
-              lastError = e;
-              const status = e?.statusCode || e?.$metadata?.httpStatusCode || 0;
-              const isRetryable = status === 429 || (status >= 500 && status < 600);
-
-              if (!isRetryable || attempt >= maxAttempts) throw e;
-
-              const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
-              await new Promise((resolve) => setTimeout(resolve, delay));
-            }
-          }
-
-          throw lastError;
-        };
+        const customFetch = createKiroFetch(cliAuth, apiRegion, { accessToken, expiresAt });
 
         return { apiKey: "", baseURL, fetch: customFetch };
       },
@@ -337,6 +428,36 @@ const KiroPlugin = async (_input: any) => {
 };
 
 export default {
-  id: PLUGIN_ID,
+  ...Plugin.define({
+    id: PLUGIN_ID,
+    async setup(ctx) {
+      const resolveApiRegion = resolveApiRegionWith(getApiRegionOverride());
+      const proxy = await startKiroProxy(resolveApiRegion);
+
+      let models: Model.Info[] = [];
+      try {
+        models = buildV2Models(listKiroModels());
+      } catch (e) {
+        console.error(`[kiro] Failed to list Kiro models: ${e instanceof Error ? e.message : e}`);
+      }
+
+      await ctx.provider.transform((editor) => {
+        editor.add({
+          info: {
+            ...Provider.Info.empty(Provider.ID.make(PLUGIN_ID)),
+            name: "Kiro",
+            activation: "enabled",
+            package: "@opencode/ai/providers/openai-compatible",
+            settings: { baseURL: proxy.baseURL, apiKey: "kiro-cli" },
+          },
+          models,
+        });
+      });
+
+      return () => {
+        void proxy.close();
+      };
+    },
+  }),
   server: KiroPlugin,
 };

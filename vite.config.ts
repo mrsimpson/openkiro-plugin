@@ -8,7 +8,7 @@ export default defineConfig({
       fileName: "index",
     },
     rollupOptions: {
-      external: [/^@aws\//, /^bun:/, /^node:/, /^fs$/, /^path$/, /^os$/, /^crypto$/],
+      external: [/^@aws\//, /^bun:/, /^node:/, /^fs$/, /^path$/, /^os$/, /^crypto$/, /^child_process$/],
     },
   },
   test: {

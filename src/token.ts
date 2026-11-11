@@ -1,6 +1,8 @@
 /**
  * Custom error for token refresh failures
  */
+import { KIRO_CONSTANTS } from "./constants.js";
+
 export class KiroTokenRefreshError extends Error {
   constructor(
     message: string,
@@ -40,8 +42,7 @@ export async function refreshAccessToken(
         Accept: "application/json",
         "amz-sdk-request": "attempt=1; max=1",
         "x-amzn-kiro-agent-mode": "vibe",
-        "user-agent":
-          "aws-sdk-js/3.738.0 ua/2.1 os/other lang/js md/browser#unknown_unknown api/sso-oidc#3.738.0 m/E KiroIDE",
+        "user-agent": `KiroCLI/${KIRO_CONSTANTS.KIRO_CLI_VERSION} KAS/${KIRO_CONSTANTS.KIRO_CLI_VERSION} os/${process.platform} md/appVersion-${KIRO_CONSTANTS.KIRO_CLI_VERSION}`,
         Connection: "close",
       },
       body: JSON.stringify(requestBody),

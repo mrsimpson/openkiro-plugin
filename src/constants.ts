@@ -1,15 +1,17 @@
+import { buildModelMapping, listKiroModels, getKiroCliVersion } from "./kiro-cli-models.js";
+
+const KIRO_CLI_VERSION = getKiroCliVersion();
+
 export const KIRO_CONSTANTS = {
   REFRESH_IDC_URL: "https://oidc.{{region}}.amazonaws.com/token",
   BASE_URL: "https://q.{{region}}.amazonaws.com/generateAssistantResponse",
   DEFAULT_REGION: "us-east-1",
   AXIOS_TIMEOUT: 120000,
-  USER_AGENT: "KiroIDE",
-  SDK_VERSION: "3.738.0",
+  USER_AGENT: `KiroIDE/${KIRO_CLI_VERSION}`,
+  KIRO_CLI_VERSION,
   CHAT_TRIGGER_TYPE_MANUAL: "MANUAL",
   ORIGIN_AI_EDITOR: "AI_EDITOR",
 };
-
-import { buildModelMapping, listKiroModels } from "./kiro-cli-models.js";
 
 export const MODEL_MAPPING: Record<string, string> = buildModelMapping(listKiroModels());
 
