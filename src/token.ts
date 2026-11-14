@@ -1,3 +1,5 @@
+import { kiroUserAgent } from "./user-agent.js";
+
 /**
  * Custom error for token refresh failures
  */
@@ -40,8 +42,7 @@ export async function refreshAccessToken(
         Accept: "application/json",
         "amz-sdk-request": "attempt=1; max=1",
         "x-amzn-kiro-agent-mode": "vibe",
-        "user-agent":
-          "aws-sdk-js/3.738.0 ua/2.1 os/other lang/js md/browser#unknown_unknown api/sso-oidc#3.738.0 m/E KiroIDE",
+        "user-agent": kiroUserAgent(),
         Connection: "close",
       },
       body: JSON.stringify(requestBody),

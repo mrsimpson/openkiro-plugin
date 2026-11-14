@@ -9,7 +9,19 @@ An [OpenCode](https://github.com/sst/opencode) plugin that connects to AWS CodeW
 
 ## Setup
 
-Add to your `~/.config/opencode/opencode.json`:
+The plugin supports OpenCode 1.x and 2.x from the same package.
+
+**OpenCode 2.x** — the config key is `plugins`:
+
+```json
+{
+  "plugins": ["/path/to/openkiro-plugin"]
+}
+```
+
+The Kiro provider is enabled automatically when the Kiro CLI is logged in; no `/connect` step is needed. Models are read from `kiro-cli chat --list-models`, and Claude models offer `low`/`medium`/`high` thinking variants.
+
+**OpenCode 1.x** — the config key is `plugin`:
 
 ```json
 {
@@ -86,6 +98,15 @@ OpenCode ─── AI SDK (openai-compatible) ─── customFetch ─┐
 
 The plugin intercepts the `fetch` call that OpenCode's AI SDK would normally make to an OpenAI-compatible endpoint, and instead translates it into a CodeWhisperer streaming SDK call. Responses are streamed back as Server-Sent Events in OpenAI format.
 
+How the fetch gets injected depends on the OpenCode version:
+
+- 1.x: the `auth.loader` hook returns `{ fetch }`.
+- 2.x: provider settings must be plain JSON, so the plugin registers an `aisdk` `sdk` hook scoped to the `kiro` provider and builds the `@ai-sdk/openai-compatible` provider with the custom fetch itself. No local proxy or open port is involved.
+
+### Client version / User-Agent
+
+The API rejects clients whose user-agent lacks a recognised version token (403 "This version of Kiro is no longer supported"). The plugin sends `KiroCLI/<ver> KAS/<ver> os/<platform> md/appVersion-<ver>` on API and token-refresh calls. The version is read lazily from `kiro-cli --version`, with a fallback in `src/user-agent.ts`.
+
 ### Region resolution
 
 1. Optional override: `~/.config/opencode/kiro.json` → `{ "default_region": "eu-central-1" }`
@@ -101,8 +122,13 @@ Retries up to 3 times on 429 (rate limit) and 5xx errors with exponential backof
 
 ```
 src/
-├── index.ts              Plugin entry — hooks into OpenCode's config/auth/provider system
+├── index.ts              Plugin entry — V1 hooks (`server`) and V2 entry (`setup`)
+├── v2.ts                 OpenCode 2.x provider registration + aisdk hook
+├── kiro-fetch.ts         Custom fetch: OpenAI request → CodeWhisperer → OpenAI SSE
+├── model-config.ts       Model list → OpenCode model config
+├── user-agent.ts         Versioned Kiro CLI user-agent
 ├── kiro-cli-db.ts        Reads auth from Kiro CLI's SQLite DB
+├── kiro-cli-models.ts    Reads the model list from the Kiro CLI
 ├── token.ts              OIDC token refresh
 ├── sdk-client.ts         CodeWhisperer streaming client (cached per region+token)
 ├── request.ts            Transforms OpenAI messages → CodeWhisperer conversationState

@@ -11,9 +11,11 @@
     "build": "vp build"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "2.0.41",
     "@aws/codewhisperer-streaming-client": "^1.0.0"
   },
   "devDependencies": {
+    "@opencode/plugin": "2.2.7",
     "@types/node": "^20.0.0",
     "typescript": "^5.0.0",
     "vite": "8.0.16",
