@@ -1,5 +1,5 @@
 import { CodeWhispererStreamingClient } from "@aws/codewhisperer-streaming-client";
-import { KIRO_CONSTANTS } from "./constants.js";
+import { kiroUserAgentParts } from "./user-agent.js";
 import type { KiroAuthDetails } from "./types.js";
 
 const clientCache = new Map<string, { client: CodeWhispererStreamingClient; token: string }>();
@@ -21,7 +21,7 @@ export function createSdkClient(
     endpoint: `https://q.${region}.amazonaws.com`,
     token: () => Promise.resolve({ token }),
     maxAttempts: 1,
-    customUserAgent: [[KIRO_CONSTANTS.USER_AGENT]],
+    customUserAgent: kiroUserAgentParts().map((part) => [part]),
   });
 
   client.middlewareStack.add(

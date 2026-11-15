@@ -1,3 +1,4 @@
 {
-  "ignoreDependencies": ["vite-plus"]
+  "ignoreDependencies": ["vite-plus"],
+  "ignoreBinaries": ["kiro-cli"]
 }

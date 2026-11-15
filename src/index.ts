@@ -1,15 +1,13 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { refreshAccessToken, KiroTokenRefreshError } from "./token.js";
-import { transformToSdkRequest } from "./request.js";
-import { createSdkClient } from "./sdk-client.js";
-import { GenerateAssistantResponseCommand } from "@aws/codewhisperer-streaming-client";
-import { transformSdkStream } from "./streaming/sdk-stream-transformer.js";
-import { extractRegionFromArn } from "./constants.js";
-import type { KiroAuthDetails } from "./types.js";
+import type { Plugin } from "@opencode/plugin";
+import { refreshAccessToken } from "./token.js";
 import { readKiroCliAuth, type KiroCliAuth } from "./kiro-cli-db.js";
-import { listKiroModels, modelIdToKey, type KiroModel } from "./kiro-cli-models.js";
+import { listKiroModels } from "./kiro-cli-models.js";
+import { createKiroFetch, resolveApiRegion as resolveRegion } from "./kiro-fetch.js";
+import { buildModelConfig } from "./model-config.js";
+import { setupV2 } from "./v2.js";
 
 const PLUGIN_ID = "kiro";
 
@@ -52,66 +50,10 @@ function getApiRegionOverride(): string | undefined {
   return undefined;
 }
 
-/**
- * Derives a human-readable display name from a model id and credit multiplier.
- * e.g. "claude-sonnet-4.6", 1.3 → "Claude Sonnet 4.6 (1.3x)"
- */
-function formatModelName(id: string, credits: number): string {
-  // Capitalise hyphen-separated words, keep version numbers intact
-  const words = id
-    .split("-")
-    .map((w) => (w.match(/^\d/) ? w : w.charAt(0).toUpperCase() + w.slice(1)));
-  return `${words.join(" ")} (${credits}x)`;
-}
-
-/**
- * Returns true for model ids that are likely to support vision (images/PDFs).
- * GPT and Claude models do; small open-weight models generally don't.
- */
-function supportsVision(id: string): boolean {
-  return id.startsWith("claude-") || id.startsWith("gpt-");
-}
-
-/**
- * Builds the opencode model config object from the live kiro-cli model list.
- */
-function buildModelConfig(models: KiroModel[]): Record<string, any> {
-  const config: Record<string, any> = {};
-
-  for (const model of models) {
-    const key = modelIdToKey(model.id);
-    const isClaude = model.id.startsWith("claude-");
-    const isAuto = model.id === "auto";
-    const contextLimit = isAuto ? 200_000 : 1_000_000;
-    const modalities: Record<string, string[]> = {
-      input: supportsVision(model.id) ? ["text", "image", "pdf"] : ["text"],
-      output: ["text"],
-    };
-
-    config[key] = {
-      name: formatModelName(model.id, model.credits),
-      limit: { context: contextLimit, output: 64_000 },
-      ...(isAuto || supportsVision(model.id) ? { modalities } : {}),
-      ...(isClaude ? {
-        variants: {
-          low:    { thinkingConfig: { thinkingBudget: 8_192 } },
-          medium: { thinkingConfig: { thinkingBudget: 16_384 } },
-          high:   { thinkingConfig: { thinkingBudget: 32_768 } },
-        },
-      } : {}),
-    };
-  }
-
-  return config;
-}
-
 const KiroPlugin = async (_input: any) => {
   const regionOverride = getApiRegionOverride();
 
-  function resolveApiRegion(cliAuth: KiroCliAuth): string {
-    if (regionOverride) return regionOverride;
-    return extractRegionFromArn(cliAuth.profileArn) || cliAuth.region || "us-east-1";
-  }
+  const resolveApiRegion = (cliAuth: KiroCliAuth) => resolveRegion(cliAuth, regionOverride);
 
   return {
     config: async (input: any) => {
@@ -157,114 +99,10 @@ const KiroPlugin = async (_input: any) => {
           }
         }
 
-        const customFetch: typeof fetch = async (resource, init) => {
-          const url = typeof resource === "string" ? resource : (resource as any).url;
-          if (!/q\..*\.amazonaws\.com/.test(url)) {
-            return globalThis.fetch(resource, init);
-          }
-
-          // Re-read from DB on each request to pick up token rotations from Kiro CLI
-          const freshAuth = readKiroCliAuth();
-          if (freshAuth) {
-            accessToken = freshAuth.accessToken;
-            expiresAt = freshAuth.expiresAt;
-          }
-
-          if (Date.now() >= expiresAt - 120_000) {
-            const src = freshAuth || cliAuth;
-            try {
-              const refreshed = await refreshAccessToken(
-                src.refreshToken,
-                src.clientId,
-                src.clientSecret,
-                src.region,
-              );
-              accessToken = refreshed.accessToken;
-              expiresAt = refreshed.expiresAt;
-            } catch (e) {
-              throw new KiroTokenRefreshError(
-                `Token refresh failed: ${e instanceof Error ? e.message : "Unknown error"}`,
-                "REFRESH_FAILED",
-              );
-            }
-          }
-
-          const body = init?.body
-            ? typeof init.body === "string"
-              ? JSON.parse(init.body)
-              : init.body
-            : {};
-          const model = body.model || "claude-sonnet-4-6";
-
-          const think = !!body.providerOptions?.thinkingConfig;
-          const budget = body.providerOptions?.thinkingConfig?.thinkingBudget || 20000;
-
-          const sdkRequest = transformToSdkRequest(
-            body,
-            model,
-            {
-              idcRegion: cliAuth.region,
-              profileArn: cliAuth.profileArn,
-            } as KiroAuthDetails,
-            think,
-            budget,
-          );
-
-          const effectiveRegion = sdkRequest.region || apiRegion;
-          const sdkClient = createSdkClient(
-            { access: accessToken } as KiroAuthDetails,
-            effectiveRegion,
-          );
-
-          const maxAttempts = 3;
-          let lastError: any = null;
-
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-              const command = new GenerateAssistantResponseCommand({
-                conversationState: sdkRequest.conversationState,
-                profileArn: sdkRequest.profileArn,
-              });
-              const sdkResponse = await sdkClient.send(command);
-              const stream = transformSdkStream(sdkResponse, model, sdkRequest.conversationId);
-
-              const encoder = new TextEncoder();
-              const readable = new ReadableStream({
-                async start(controller) {
-                  try {
-                    for await (const chunk of stream) {
-                      controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
-                    }
-                    controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-                    controller.close();
-                  } catch (e) {
-                    controller.error(e);
-                  }
-                },
-              });
-
-              return new Response(readable, {
-                status: 200,
-                headers: {
-                  "Content-Type": "text/event-stream",
-                  "Cache-Control": "no-cache",
-                  Connection: "keep-alive",
-                },
-              });
-            } catch (e: any) {
-              lastError = e;
-              const status = e?.statusCode || e?.$metadata?.httpStatusCode || 0;
-              const isRetryable = status === 429 || (status >= 500 && status < 600);
-
-              if (!isRetryable || attempt >= maxAttempts) throw e;
-
-              const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
-              await new Promise((resolve) => setTimeout(resolve, delay));
-            }
-          }
-
-          throw lastError;
-        };
+        const customFetch = createKiroFetch({
+          regionOverride,
+          initialToken: { accessToken, expiresAt },
+        });
 
         return { apiKey: "", baseURL, fetch: customFetch };
       },
@@ -336,7 +174,27 @@ const KiroPlugin = async (_input: any) => {
   };
 };
 
-export default {
+function resolveBaseURL(regionOverride: string | undefined): string {
+  const cliAuth = readKiroCliAuth();
+  const region = cliAuth ? resolveRegion(cliAuth, regionOverride) : regionOverride || "us-east-1";
+  return `https://q.${region}.amazonaws.com`;
+}
+
+/** OpenCode 2.x entry (V2 plugin API). */
+const v2: Plugin.Plugin = {
   id: PLUGIN_ID,
+  async setup(ctx) {
+    const regionOverride = getApiRegionOverride();
+    await setupV2(ctx, {
+      providerID: PLUGIN_ID,
+      regionOverride,
+      resolveBaseURL: () => resolveBaseURL(regionOverride),
+    });
+  },
+};
+
+// Dual export: OpenCode 2.x calls `setup`, OpenCode 1.x calls `server`.
+export default {
+  ...v2,
   server: KiroPlugin,
 };

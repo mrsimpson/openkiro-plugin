@@ -90,51 +90,47 @@ describe("plugin entry (index.ts)", () => {
     });
   });
 
-  describe("customFetch in loader", () => {
+  describe("createKiroFetch (kiro-fetch.ts)", () => {
+    const fs = require("fs");
+    const source = fs.readFileSync(require("path").resolve(__dirname, "./kiro-fetch.ts"), "utf-8");
+
     it("should contain retry logic", () => {
-      const fs = require("fs");
-      const source = fs.readFileSync(require("path").resolve(__dirname, "./index.ts"), "utf-8");
-
-      const customFetchBody = source.slice(
-        source.indexOf("const customFetch"),
-        source.indexOf("return { apiKey"),
-      );
-
-      expect(customFetchBody).toMatch(/maxAttempts/);
-      expect(customFetchBody).toMatch(/429/);
+      expect(source).toMatch(/maxAttempts/);
+      expect(source).toMatch(/429/);
     });
 
     it("should re-read auth from DB on each request", () => {
-      const fs = require("fs");
-      const source = fs.readFileSync(require("path").resolve(__dirname, "./index.ts"), "utf-8");
-
-      const customFetchBody = source.slice(
-        source.indexOf("const customFetch"),
-        source.indexOf("return { apiKey"),
-      );
-
-      expect(customFetchBody).toContain("readKiroCliAuth");
+      expect(source).toContain("readKiroCliAuth");
     });
 
     it("should use GenerateAssistantResponseCommand", () => {
-      const fs = require("fs");
-      const source = fs.readFileSync(require("path").resolve(__dirname, "./index.ts"), "utf-8");
-
       expect(source).toContain("GenerateAssistantResponseCommand");
       expect(source).toMatch(/\.send\s*\(/);
     });
 
-    it("should pass thinking config from providerOptions to transformToSdkRequest", () => {
+    it("should read thinking config from providerOptions (V1) and body (V2)", () => {
+      expect(source).toContain("providerOptions?.thinkingConfig");
+      expect(source).toContain("body.thinkingConfig");
+      expect(source).toContain("transformToSdkRequest");
+    });
+
+    it("V1 loader should use createKiroFetch", () => {
+      const index = fs.readFileSync(require("path").resolve(__dirname, "./index.ts"), "utf-8");
+      expect(index).toContain("createKiroFetch(");
+    });
+  });
+
+  describe("V2 entry", () => {
+    it("should expose setup next to server", () => {
+      expect(typeof pluginModule.setup).toBe("function");
+    });
+
+    it("should not import @opencode/plugin at runtime", () => {
       const fs = require("fs");
-      const source = fs.readFileSync(require("path").resolve(__dirname, "./index.ts"), "utf-8");
-
-      const customFetchBody = source.slice(
-        source.indexOf("const customFetch"),
-        source.indexOf("return { apiKey"),
-      );
-
-      expect(customFetchBody).toContain("providerOptions");
-      expect(customFetchBody).toContain("transformToSdkRequest");
+      for (const file of ["./index.ts", "./v2.ts"]) {
+        const src = fs.readFileSync(require("path").resolve(__dirname, file), "utf-8");
+        expect(src).not.toMatch(/^import \{[^}]*\} from "@opencode\/plugin"/m);
+      }
     });
   });
 });

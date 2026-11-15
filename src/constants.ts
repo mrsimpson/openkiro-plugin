@@ -3,8 +3,6 @@ export const KIRO_CONSTANTS = {
   BASE_URL: "https://q.{{region}}.amazonaws.com/generateAssistantResponse",
   DEFAULT_REGION: "us-east-1",
   AXIOS_TIMEOUT: 120000,
-  USER_AGENT: "KiroIDE",
-  SDK_VERSION: "3.738.0",
   CHAT_TRIGGER_TYPE_MANUAL: "MANUAL",
   ORIGIN_AI_EDITOR: "AI_EDITOR",
 };
